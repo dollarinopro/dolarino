@@ -483,6 +483,47 @@ export async function resolveAIEnsemble(env: Env, userId?: string): Promise<{
   };
 }
 
+const gatewayModelsCache = new Map<string, { fetchedAt: number; models: string[] }>();
+
+export async function discoverGatewayChatModels(rawBase: string, apiKey: string): Promise<string[]> {
+  const cleanBase = rawBase.replace(/\/chat\/completions$/, '').replace(/\/+$/, '');
+  const cacheKey = `${cleanBase}:${apiKey.slice(-6)}`;
+  const cached = gatewayModelsCache.get(cacheKey);
+  if (cached && Date.now() - cached.fetchedAt < 10 * 60_000) {
+    return cached.models;
+  }
+  try {
+    const res = await fetch(`${cleanBase}/models`, {
+      method: 'GET',
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        Accept: 'application/json',
+      },
+      signal: AbortSignal.timeout(8_000),
+    });
+    if (!res.ok) return [];
+    const text = await res.text();
+    const parsed = JSON.parse(text) as { data?: Array<{ id?: string }> };
+    const allIds = (parsed.data ?? [])
+      .map((m) => String(m.id || '').trim())
+      .filter((id) => id.length > 0 && !/embed|whisper|tts|dall-e|moderation|rerank|flux|midjourney|sora/i.test(id));
+    const score = (id: string): number => {
+      const l = id.toLowerCase();
+      if (l.includes('deepseek-v4') || l.includes('deepseek-chat') || l.includes('deepseek-v3')) return 100;
+      if (l.includes('deepseek')) return 90;
+      if (l.includes('gpt-4o-mini') || l.includes('gpt-4o') || l.includes('gpt-4.1')) return 85;
+      if (l.includes('gemini-2') || l.includes('claude-3') || l.includes('claude-4')) return 80;
+      if (l.includes('qwen') || l.includes('gpt') || l.includes('llama')) return 70;
+      return 50;
+    };
+    const ranked = Array.from(new Set(allIds)).sort((a, b) => score(b) - score(a)).slice(0, 6);
+    gatewayModelsCache.set(cacheKey, { fetchedAt: Date.now(), models: ranked });
+    return ranked;
+  } catch {
+    return [];
+  }
+}
+
 export async function callBYOAI(
   ai: AIRecord,
   systemPrompt: string,
@@ -537,12 +578,21 @@ export async function callBYOAI(
     const rawBase = (ai.baseUrl || 'https://api.deepseek.com').replace(/\/+$/, '');
     const endpoint = rawBase.endsWith('/chat/completions') ? rawBase : `${rawBase}/chat/completions`;
     const primaryModel = ai.model || 'deepseek-chat';
-    const fallbackModels = rawBase.includes('hilinkup.com')
-      ? Array.from(new Set([primaryModel, 'baidu/deepseek-v4.1-flash-1017', 'deepseek/deepseek-v4.1-flash-1017', 'doubao/deepseek-v4.1-flash-1017']))
+    const isHilinkup = rawBase.includes('hilinkup.com');
+    const fallbackModels = isHilinkup
+      ? Array.from(
+          new Set([
+            primaryModel,
+            'baidu/deepseek-v4.1-flash-1017',
+            'deepseek/deepseek-v4.1-flash-1017',
+            'doubao/deepseek-v4.1-flash-1017',
+            'deepseek-chat',
+            'deepseek-v3',
+          ])
+        )
       : Array.from(new Set([primaryModel, 'deepseek-chat']));
 
-    let lastErr = '';
-    for (const model of fallbackModels) {
+    const attemptDeepSeek = async (model: string, includeThinkingFlag: boolean): Promise<{ ok: boolean; content?: string; err?: string; status: number }> => {
       const isReasoningModel =
         model.includes('reasoner') ||
         model.includes('v4') ||
@@ -560,8 +610,9 @@ export async function callBYOAI(
         bodyPayload.temperature = ai.temperature;
       }
       if (
-        (opts?.fastJson && model === 'deepseek-flash') ||
-        (rawBase.includes('hilinkup.com') && (model.includes('flash-1017') || model.includes('deepseek-v4')))
+        includeThinkingFlag &&
+        ((opts?.fastJson && model === 'deepseek-flash') ||
+          (isHilinkup && (model.includes('flash-1017') || model.includes('deepseek-v4'))))
       ) {
         bodyPayload.thinking = { type: 'disabled' };
       }
@@ -575,17 +626,48 @@ export async function callBYOAI(
         body: JSON.stringify(bodyPayload),
         signal: AbortSignal.timeout(35_000),
       });
-      const json = await res.json() as {
-        choices?: Array<{ message?: { content?: string; reasoning_content?: string } }>;
-        error?: { message?: string };
-      };
+      const rawText = await res.text();
+      let json: { choices?: Array<{ message?: { content?: string; reasoning_content?: string } }>; error?: { message?: string } } = {};
+      try {
+        json = JSON.parse(rawText);
+      } catch {
+        // non-JSON upstream response
+      }
       if (res.ok) {
         const msg = json.choices?.[0]?.message;
-        return msg?.content || msg?.reasoning_content || '';
+        const content = msg?.content || msg?.reasoning_content || '';
+        if (content.trim()) return { ok: true, content, status: res.status };
+        return { ok: false, err: 'Empty DeepSeek response content', status: res.status };
       }
-      lastErr = json.error?.message ?? `DeepSeek HTTP ${res.status}`;
-      if (!/model|not found|unsupported/i.test(lastErr)) {
-        throw new Error(lastErr);
+      return { ok: false, err: json.error?.message || rawText.slice(0, 180) || `DeepSeek HTTP ${res.status}`, status: res.status };
+    };
+
+    let lastErr = '';
+    const tried = new Set<string>();
+    const runDeepSeekList = async (modelsToTry: string[]): Promise<string | null> => {
+      for (const model of modelsToTry) {
+        if (tried.has(model)) continue;
+        tried.add(model);
+        let out = await attemptDeepSeek(model, true);
+        if (!out.ok && isHilinkup && (out.status === 400 || out.status === 422)) {
+          out = await attemptDeepSeek(model, false);
+        }
+        if (out.ok && out.content) return out.content;
+        lastErr = out.err || `DeepSeek HTTP ${out.status}`;
+        if (out.status === 401 || out.status === 403 || /invalid api key|unauthorized|insufficient.*quota|balance/i.test(lastErr)) {
+          throw new Error(lastErr);
+        }
+      }
+      return null;
+    };
+
+    const first = await runDeepSeekList(fallbackModels);
+    if (first) return first;
+    if (isHilinkup) {
+      const discovered = await discoverGatewayChatModels(rawBase, ai.apiKey);
+      if (discovered.length > 0) {
+        const second = await runDeepSeekList(discovered);
+        if (second) return second;
       }
     }
     throw new Error(lastErr || 'DeepSeek gateway error');
@@ -594,17 +676,40 @@ export async function callBYOAI(
   const rawBase = (ai.baseUrl || 'https://api.openai.com/v1').replace(/\/+$/, '');
   const endpoint = rawBase.endsWith('/chat/completions') ? rawBase : `${rawBase}/chat/completions`;
   const primaryModel = ai.model || 'gpt-4o-mini';
-  const candidateModels = rawBase.includes('hilinkup.com')
-    ? Array.from(new Set([primaryModel, 'baidu/deepseek-v4.1-flash-1017', 'deepseek/deepseek-v4.1-flash-1017', 'doubao/deepseek-v4.1-flash-1017']))
+  const isHilinkup = rawBase.includes('hilinkup.com');
+  const candidateModels = isHilinkup
+    ? Array.from(
+        new Set([
+          primaryModel,
+          'baidu/deepseek-v4.1-flash-1017',
+          'deepseek/deepseek-v4.1-flash-1017',
+          'doubao/deepseek-v4.1-flash-1017',
+          'deepseek-chat',
+          'deepseek-v3',
+          'gpt-4o-mini',
+        ])
+      )
     : [primaryModel];
 
-  let lastGatewayErr = '';
-  for (const model of candidateModels) {
+  const attemptGatewayCall = async (model: string, includeThinkingFlag: boolean): Promise<{ ok: boolean; content?: string; err?: string; status: number }> => {
     const isReasoningModel =
       model.includes('deepseek-v4') ||
       model.includes('reasoner') ||
       model.includes('flash-1017') ||
       /\bo1\b|\bo3\b|\br1\b/i.test(model);
+
+    const payload: Record<string, unknown> = {
+      model,
+      max_tokens: isReasoningModel ? Math.max(ai.maxTokens || 2400, 2400) : (ai.maxTokens || 1536),
+      messages: [
+        { role: 'system', content: systemPrompt },
+        { role: 'user', content: userPrompt },
+      ],
+    };
+    if (!isReasoningModel) payload.temperature = ai.temperature;
+    if (includeThinkingFlag && isHilinkup && (model.includes('flash-1017') || model.includes('deepseek-v4'))) {
+      payload.thinking = { type: 'disabled' };
+    }
 
     const res = await fetch(endpoint, {
       method: 'POST',
@@ -612,30 +717,52 @@ export async function callBYOAI(
         Authorization: `Bearer ${ai.apiKey}`,
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify({
-        model,
-        ...(isReasoningModel ? {} : { temperature: ai.temperature }),
-        ...(rawBase.includes('hilinkup.com') && (model.includes('flash-1017') || model.includes('deepseek-v4'))
-          ? { thinking: { type: 'disabled' } }
-          : {}),
-        max_tokens: isReasoningModel ? Math.max(ai.maxTokens || 2400, 2400) : (ai.maxTokens || 1536),
-        messages: [
-          { role: 'system', content: systemPrompt },
-          { role: 'user', content: userPrompt },
-        ],
-      }),
+      body: JSON.stringify(payload),
       signal: AbortSignal.timeout(35_000),
     });
-    const json = await res.json() as {
-      choices?: Array<{ message?: { content?: string; reasoning_content?: string } }>;
-      error?: { message?: string };
-    };
-    if (res.ok) {
-      return json.choices?.[0]?.message?.content || json.choices?.[0]?.message?.reasoning_content || '';
+    const rawText = await res.text();
+    let json: { choices?: Array<{ message?: { content?: string; reasoning_content?: string } }>; error?: { message?: string } } = {};
+    try {
+      json = JSON.parse(rawText);
+    } catch {
+      // non-JSON upstream error
     }
-    lastGatewayErr = json.error?.message ?? `OpenAI/Gateway HTTP ${res.status}`;
-    if (!/model|not found|unsupported/i.test(lastGatewayErr)) {
-      throw new Error(lastGatewayErr);
+    if (res.ok) {
+      const content = json.choices?.[0]?.message?.content || json.choices?.[0]?.message?.reasoning_content || '';
+      if (content.trim()) return { ok: true, content, status: res.status };
+      return { ok: false, err: 'Empty AI response content', status: res.status };
+    }
+    const errMsg = json.error?.message || rawText.slice(0, 180) || `OpenAI/Gateway HTTP ${res.status}`;
+    return { ok: false, err: errMsg, status: res.status };
+  };
+
+  let lastGatewayErr = '';
+  const triedModels = new Set<string>();
+  const runList = async (modelsToTry: string[]): Promise<string | null> => {
+    for (const model of modelsToTry) {
+      if (triedModels.has(model)) continue;
+      triedModels.add(model);
+      let out = await attemptGatewayCall(model, true);
+      if (!out.ok && isHilinkup && (out.status === 400 || out.status === 422) && (model.includes('flash-1017') || model.includes('deepseek-v4'))) {
+        out = await attemptGatewayCall(model, false);
+      }
+      if (out.ok && out.content) return out.content;
+      lastGatewayErr = out.err || `OpenAI/Gateway HTTP ${out.status}`;
+      if (out.status === 401 || out.status === 403 || /invalid api key|unauthorized|insufficient.*quota|balance/i.test(lastGatewayErr)) {
+        throw new Error(lastGatewayErr);
+      }
+    }
+    return null;
+  };
+
+  const firstPass = await runList(candidateModels);
+  if (firstPass) return firstPass;
+
+  if (isHilinkup) {
+    const discovered = await discoverGatewayChatModels(rawBase, ai.apiKey);
+    if (discovered.length > 0) {
+      const secondPass = await runList(discovered);
+      if (secondPass) return secondPass;
     }
   }
   throw new Error(lastGatewayErr || 'OpenAI/Gateway error');

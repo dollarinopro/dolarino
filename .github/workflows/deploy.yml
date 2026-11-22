@@ -187,6 +187,12 @@ jobs:
           echo "Checking Pages HTML & OG image:"
           curl -fsS "${PAGES_URL}/" | grep -E "og:image|og:url|og:title" | head -n 6 || true
           curl -fsSI "${PAGES_URL}/dollarino-preview.jpg?v=2026" | head -n 5 || true
+          echo "Checking live AI chat endpoint:"
+          AI_RES=$(curl -fsS -X POST "${PAGES_URL}/api/public/ai-chat" \
+            -H "Content-Type: application/json" \
+            -d '{"message":"سلام کوتاه بگو زنده هستی"}' || true)
+          printf '%s\n' "$AI_RES" | head -c 350
+          echo ""
 
           if [ -n "$TELEGRAM_BOT_TOKEN" ]; then
             WEBHOOK_BASE="$PAGES_URL"
