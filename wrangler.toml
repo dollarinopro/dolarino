@@ -11,7 +11,7 @@ not_found_handling = "single-page-application"
 [vars]
 OWNER_TELEGRAM_ID = "944021185"
 DEFAULT_SIGNAL_CHANNEL = "@Dollarino_official"
-PUBLIC_WEB_URL = "https://dollarino.pages.dev"
+PUBLIC_WEB_URL = "https://dolarino.pages.dev"
 ALLOW_LIVE_TRADING = "true"
 HILINKUP_BASE_URL = "https://api.hilinkup.com/v1"
 HILINKUP_MODEL = "baidu/deepseek-v4.1-flash-1017"

@@ -996,7 +996,7 @@ export function DollarinoRobotLogoIcon({ size = 34 }: { size?: number }) {
 }
 
 const ORB_STORAGE_KEY = 'dollarino_ai_orb_pos_v2';
-const ORB_SIZE = 56;
+const ORB_SIZE = 60;
 
 interface OrbPos {
   side: 'left' | 'right';
@@ -1216,11 +1216,11 @@ export function FloatingAiChat({
           }}
           className="liquid-orb fixed z-[175] rounded-full grid place-items-center cursor-pointer select-none hover:!opacity-100 focus:outline-none"
         >
-          <div className="relative z-10 grid place-items-center drop-shadow-[0_2px_6px_rgba(22,82,240,0.3)]">
-            <DollarinoRobotLogoIcon size={35} />
+          <div className="liquid-orb-core relative z-10 drop-shadow-[0_2px_8px_rgba(22,82,240,0.34)]">
+            <DollarinoRobotLogoIcon size={32} />
           </div>
           <span
-            className="absolute top-1.5 end-1.5 z-20 w-2.5 h-2.5 rounded-full bg-emerald-400 ring-2 ring-[var(--panel)] shadow-[0_0_8px_rgba(16,185,129,0.65)] pointer-events-none"
+            className="absolute top-1.5 end-1.5 z-20 w-2.5 h-2.5 rounded-full bg-emerald-400 ring-2 ring-white/80 dark:ring-[var(--panel)] shadow-[0_0_10px_rgba(16,185,129,0.75)] pointer-events-none"
             aria-hidden="true"
           />
         </button>
