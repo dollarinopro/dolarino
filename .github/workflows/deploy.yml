@@ -73,13 +73,17 @@ jobs:
           if [ -z "$CLOUDFLARE_ACCOUNT_ID" ]; then unset CLOUDFLARE_ACCOUNT_ID; fi
           npx wrangler d1 migrations apply dollarino-db --remote
       - name: Deploy Cloudflare Worker (API + DO + Assets)
+        id: worker
         if: steps.cf.outputs.enabled == 'true'
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         run: |
           if [ -z "$CLOUDFLARE_ACCOUNT_ID" ]; then unset CLOUDFLARE_ACCOUNT_ID; fi
-          npx wrangler deploy
+          DEPLOY_OUT=$(npx wrangler deploy 2>&1 | tee /dev/stderr)
+          WORKER_URL=$(printf '%s\n' "$DEPLOY_OUT" | grep -oE 'https://[a-zA-Z0-9.-]+\.workers\.dev' | head -n 1 || true)
+          echo "url=$WORKER_URL" >> "$GITHUB_OUTPUT"
+          echo "Deployed Worker URL: $WORKER_URL"
       - name: Sync Optional Worker Runtime Secrets
         if: steps.cf.outputs.enabled == 'true'
         env:
@@ -97,12 +101,114 @@ jobs:
               printf '%s' "$VAL" | npx wrangler secret put "$KEY"
             fi
           done
+      - name: Configure Cloudflare Pages Service Binding & Build Settings
+        if: steps.cf.outputs.enabled == 'true' && vars.SKIP_PAGES_DEPLOY != 'true'
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          PAGES_PROJECT: ${{ vars.CLOUDFLARE_PAGES_PROJECT || 'dolarino' }}
+          WORKER_URL: ${{ steps.worker.outputs.url }}
+        run: |
+          if [ -z "$CLOUDFLARE_ACCOUNT_ID" ]; then
+            echo "CLOUDFLARE_ACCOUNT_ID not set; skipping Pages API config PATCH"
+            exit 0
+          fi
+          node -e '
+            const acc = process.env.CLOUDFLARE_ACCOUNT_ID;
+            const proj = process.env.PAGES_PROJECT || "dolarino";
+            const token = process.env.CLOUDFLARE_API_TOKEN;
+            const workerUrl = process.env.WORKER_URL || "";
+            const envVars = workerUrl ? { WORKER_URL: { type: "plain_text", value: workerUrl } } : {};
+            const services = { WORKER_API: { service: "dollarino-worker", environment: "production" } };
+            const body = {
+              build_config: {
+                build_command: "npm run build",
+                destination_dir: "apps/web/dist",
+                root_dir: ""
+              },
+              deployment_configs: {
+                production: { services, env_vars: envVars },
+                preview: { services, env_vars: envVars }
+              }
+            };
+            (async () => {
+              const res = await fetch(`https://api.cloudflare.com/client/v4/accounts/${acc}/pages/projects/${proj}`, {
+                method: "PATCH",
+                headers: {
+                  "Authorization": `Bearer ${token}`,
+                  "Content-Type": "application/json"
+                },
+                body: JSON.stringify(body)
+              });
+              const json = await res.json().catch(() => ({}));
+              console.log("Pages PATCH status:", res.status, "success:", Boolean(json.success));
+              if (!json.success) {
+                console.log("Pages PATCH errors:", JSON.stringify(json.errors || []));
+              }
+            })();
+          '
       - name: Deploy Cloudflare Pages Frontend + Functions Proxy
         if: steps.cf.outputs.enabled == 'true' && vars.SKIP_PAGES_DEPLOY != 'true'
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          PAGES_PROJECT: ${{ vars.CLOUDFLARE_PAGES_PROJECT || 'dolarino' }}
         working-directory: apps/web
         run: |
           if [ -z "$CLOUDFLARE_ACCOUNT_ID" ]; then unset CLOUDFLARE_ACCOUNT_ID; fi
-          npx wrangler pages deploy dist --project-name="${{ vars.CLOUDFLARE_PAGES_PROJECT || 'dolarino' }}" --branch=main
+          npx wrangler pages deploy ./dist --project-name="$PAGES_PROJECT" --branch=main
+      - name: Verify Live Deployment & Register Telegram Webhook
+        if: steps.cf.outputs.enabled == 'true'
+        env:
+          PAGES_PROJECT: ${{ vars.CLOUDFLARE_PAGES_PROJECT || 'dolarino' }}
+          WORKER_URL: ${{ steps.worker.outputs.url }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+        run: |
+          PAGES_URL="https://${PAGES_PROJECT}.pages.dev"
+          echo "=== Live Health Checks ==="
+          WORKER_OK=0
+          if [ -n "$WORKER_URL" ]; then
+            if curl -fsS --retry 3 --retry-delay 3 "${WORKER_URL}/api/health" | head -c 300; then
+              echo ""
+              echo "Worker /api/health: OK"
+              WORKER_OK=1
+            else
+              echo "Worker /api/health: FAILED"
+            fi
+          fi
+          PAGES_OK=0
+          if curl -fsS --retry 3 --retry-delay 4 "${PAGES_URL}/api/health" | head -c 300; then
+            echo ""
+            echo "Pages /api/health: OK"
+            PAGES_OK=1
+          else
+            echo "Pages /api/health: FAILED"
+          fi
+          echo "Checking Pages HTML & OG image:"
+          curl -fsS "${PAGES_URL}/" | grep -E "og:image|og:url|og:title" | head -n 6 || true
+          curl -fsSI "${PAGES_URL}/dollarino-preview.jpg?v=2026" | head -n 5 || true
+
+          if [ -n "$TELEGRAM_BOT_TOKEN" ]; then
+            WEBHOOK_BASE="$PAGES_URL"
+            if [ "$PAGES_OK" -ne 1 ] && [ -n "$WORKER_URL" ]; then
+              WEBHOOK_BASE="$WORKER_URL"
+            fi
+            WEBHOOK_URL="${WEBHOOK_BASE}/api/webhook/telegram"
+            echo "Registering Telegram webhook -> ${WEBHOOK_URL}"
+            curl -fsS -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/setWebhook" \
+              -H "Content-Type: application/json" \
+              -d "{\"url\":\"${WEBHOOK_URL}\",\"drop_pending_updates\":false}" | head -c 300
+            echo ""
+            curl -fsS -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/setChatMenuButton" \
+              -H "Content-Type: application/json" \
+              -d "{\"menu_button\":{\"type\":\"web_app\",\"text\":\"پنل دلارینو\",\"web_app\":{\"url\":\"${PAGES_URL}\"}}}" | head -c 300
+            echo ""
+            echo "Telegram getWebhookInfo:"
+            curl -fsS "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/getWebhookInfo" | head -c 400
+            echo ""
+          fi
+
+          if [ "$PAGES_OK" -ne 1 ] && [ "$WORKER_OK" -ne 1 ]; then
+            echo "Both Pages and Worker health checks failed!" >&2
+            exit 1
+          fi

@@ -182,7 +182,7 @@ webhookRoutes.post('/telegram/setup', requireAuth, async (c) => {
     () => ({} as { webhookBaseUrl?: string; webAppUrl?: string })
   );
   const webhookBase = (body.webhookBaseUrl || new URL(c.req.url).origin).replace(/\/$/, '');
-  const webAppUrl = (body.webAppUrl || c.env.PUBLIC_WEB_URL || 'https://dollarino.pages.dev').replace(/\/$/, '');
+  const webAppUrl = (body.webAppUrl || c.env.PUBLIC_WEB_URL || 'https://dolarino.pages.dev').replace(/\/$/, '');
   const webhookUrl = `${webhookBase}/api/webhook/telegram`;
 
   const client = new TelegramBotClient(c.env.TELEGRAM_BOT_TOKEN);
@@ -238,7 +238,7 @@ export async function syncTelegramBotAutoOnVersion(env: Env, targetVersion = '9.
   }
 
   const client = new TelegramBotClient(env.TELEGRAM_BOT_TOKEN);
-  const webAppUrl = (env.PUBLIC_WEB_URL || 'https://dollarino.pages.dev').replace(/\/$/, '');
+  const webAppUrl = (env.PUBLIC_WEB_URL || 'https://dolarino.pages.dev').replace(/\/$/, '');
   const webhookUrl = `${webAppUrl}/api/webhook/telegram`;
 
   await client.setMyCommands(DEFAULT_TG_COMMANDS);
