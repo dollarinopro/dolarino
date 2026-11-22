@@ -1,0 +1,13 @@
+{
+  "name": "@dollarino/relay",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Lightweight non-Cloudflare Toobit API relay (Frankfurt/EU) bypassing CF Worker 2a06:98c0:3600::103 geo-block",
+  "scripts": {
+    "start": "node server.mjs"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

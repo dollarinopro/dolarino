@@ -1,0 +1,34 @@
+name = "dollarino-worker"
+main = "apps/worker/src/index.ts"
+compatibility_date = "2025-07-18"
+compatibility_flags = ["nodejs_compat"]
+
+[assets]
+directory = "apps/web/dist"
+binding = "ASSETS"
+not_found_handling = "single-page-application"
+
+[vars]
+OWNER_TELEGRAM_ID = "944021185"
+DEFAULT_SIGNAL_CHANNEL = "@Dollarino_official"
+PUBLIC_WEB_URL = "https://dollarino.pages.dev"
+ALLOW_LIVE_TRADING = "true"
+HILINKUP_BASE_URL = "https://api.hilinkup.com/v1"
+HILINKUP_MODEL = "baidu/deepseek-v4.1-flash-1017"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "dollarino-db"
+database_id = "07559f56-4cc0-4009-b6f5-4c6c5123db9c"
+migrations_dir = "migrations"
+
+[[durable_objects.bindings]]
+name = "TRADING_BOT_DO"
+class_name = "TradingBotCoordinator"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["TradingBotCoordinator"]
+
+[triggers]
+crons = ["* * * * *"]

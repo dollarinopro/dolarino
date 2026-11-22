@@ -1,0 +1,8 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "regions": ["fra1"],
+  "rewrites": [
+    { "source": "/health", "destination": "/api/relay?__health=1" },
+    { "source": "/toobit/:path*", "destination": "/api/relay?__p=/:path*" }
+  ]
+}

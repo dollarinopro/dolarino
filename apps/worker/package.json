@@ -1,0 +1,21 @@
+{
+  "name": "@dollarino/worker",
+  "version": "1.0.0",
+  "type": "module",
+  "main": "./src/index.ts",
+  "scripts": {
+    "dev": "wrangler dev --config ../../wrangler.toml --ip 127.0.0.1 --port 8787 --local",
+    "test": "vitest run",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@dollarino/core": "*",
+    "@resvg/resvg-wasm": "^2.6.2",
+    "hono": "^4.6.14"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20250214.0",
+    "typescript": "^5.7.2",
+    "wrangler": "^3.109.2"
+  }
+}

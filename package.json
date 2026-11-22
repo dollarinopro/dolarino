@@ -1,0 +1,18 @@
+{
+  "name": "dollarino",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Dollarino (دلارینو) — Open-Source BYO-Exchange & BYO-AI Auto-Trading Platform + Telegram Bot on Cloudflare",
+  "workspaces": [
+    "packages/core",
+    "apps/worker",
+    "apps/web"
+  ],
+  "scripts": {
+    "dev:worker": "npm run dev --workspace=apps/worker",
+    "dev:web": "npm run dev --workspace=apps/web",
+    "build": "npm run build --workspace=packages/core && npm run build --workspace=apps/web",
+    "typecheck": "npm run typecheck --workspace=packages/core && npm run typecheck --workspace=apps/worker && npm run typecheck --workspace=apps/web",
+    "test": "npm test --workspace=packages/core && npm test --workspace=apps/worker"
+  }
+}

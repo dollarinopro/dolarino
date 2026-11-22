@@ -1,0 +1,375 @@
+<!doctype html>
+<html lang="fa" dir="rtl" data-theme="cosmic">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Dollarino — پایانه هوشمند</title>
+    <link rel="stylesheet" href="popup.css" />
+  </head>
+  <body>
+    <div class="bg-mesh" aria-hidden="true"></div>
+    <div class="shell">
+      <!-- Apple Liquid-Glass Sticky Header -->
+      <header class="top-bar glass-panel">
+        <div class="brand">
+          <div class="logo-wrap">
+            <img src="icons/icon-192.png" alt="Dollarino" class="brand-logo" />
+            <span id="connDot" class="conn-dot offline" title="وضعیت اتصال"></span>
+          </div>
+          <div class="brand-info">
+            <div class="brand-row">
+              <h1>دلارینو</h1>
+              <span class="badge-cobalt">PRO v9.7</span>
+            </div>
+            <p id="userMeta" class="brand-sub">آماده اتصال امن به حساب...</p>
+          </div>
+        </div>
+
+        <div class="top-actions">
+          <button id="themeBtn" class="icon-btn" title="تغییر تم روز / شب" aria-label="تغییر تم">
+            <svg id="themeIconMoon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z" />
+            </svg>
+            <svg id="themeIconSun" class="hidden" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <circle cx="12" cy="12" r="4" />
+              <path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41" />
+            </svg>
+          </button>
+          <button id="refreshBtn" class="icon-btn" title="بروزرسانی زنده" aria-label="بروزرسانی">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M21 12a9 9 0 0 0-9-9 9.75 9.75 0 0 0-6.74 2.74L3 8" />
+              <path d="M3 3v5h5" />
+              <path d="M3 12a9 9 0 0 0 9 9 9.75 9.75 0 0 0 6.74-2.74L21 16" />
+              <path d="M16 16h5v5" />
+            </svg>
+          </button>
+          <a id="openWebHeaderBtn" href="https://dollarino.pages.dev" target="_blank" rel="noopener noreferrer" class="icon-btn" title="ورود به پنل کامل وب" aria-label="سایت دلارینو">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
+              <polyline points="15 3 21 3 21 9" />
+              <line x1="10" y1="14" x2="21" y2="3" />
+            </svg>
+          </a>
+        </div>
+      </header>
+
+      <!-- Apple iOS Sliding Segmented Navigation -->
+      <nav class="seg-nav glass-panel" role="tablist" aria-label="ناوبری اکستنشن">
+        <span id="segThumb" class="seg-thumb" aria-hidden="true"></span>
+        <button class="seg-tab active" data-tab="bot" data-index="0" role="tab" aria-selected="true">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M12 8V4H8" />
+            <rect width="16" height="12" x="4" y="8" rx="2" />
+            <path d="M2 14h2M20 14h2M15 13v2M9 13v2" />
+          </svg>
+          <span>فرماندهی</span>
+        </button>
+        <button class="seg-tab" data-tab="markets" data-index="1" role="tab" aria-selected="false">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M3 3v18h18" />
+            <path d="m19 9-5 5-4-4-3 3" />
+          </svg>
+          <span>بازارها</span>
+        </button>
+        <button class="seg-tab" data-tab="dex" data-index="2" role="tab" aria-selected="false">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M8.5 14.5A2.5 2.5 0 0 0 11 12c0-1.38-.5-2-1-3-1.072-2.143-.224-4.054 2-6 .5 2.5 2 4.9 4 6.5 2 1.6 3 3.5 3 5.5a7 7 0 1 1-14 0c0-1.153.433-2.294 1-3a2.5 2.5 0 0 0 2.5 2.5z" />
+          </svg>
+          <span>رادار DEX</span>
+        </button>
+        <button class="seg-tab" data-tab="sync" data-index="3" role="tab" aria-selected="false">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4" />
+          </svg>
+          <span>اتصال</span>
+        </button>
+      </nav>
+
+      <!-- Scrollable Viewport -->
+      <div class="viewport">
+        <!-- TAB 1: BOT & OVERVIEW -->
+        <main id="tab-bot" class="tab-panel active">
+          <!-- Onboarding Banner when not connected -->
+          <section id="welcomeHeroCard" class="hero-cobalt dot-grid-light">
+            <div class="hero-content">
+              <div class="hero-badge-row">
+                <span class="hero-pill">
+                  <span class="pulse-dot emerald"></span>
+                  <span>ترمینال همراه دلارینو</span>
+                </span>
+                <span class="hero-tag">نسخه ۹.۷</span>
+              </div>
+              <div class="welcome-grid">
+                <div>
+                  <h2 class="hero-h2">معامله و کنترل ربات با یک کلیک</h2>
+                  <p class="hero-desc">ربات ۲۴/۷، نرخ لحظه‌ای فیوچرز، رادار Trust Wallet و سود بازتان مستقیماً در مرورگر.</p>
+                </div>
+                <!-- Vector AI Graphic inspired by BrandGraphics.tsx -->
+                <svg viewBox="0 0 96 72" class="welcome-svg" fill="none" aria-hidden="true">
+                  <rect width="96" height="72" rx="16" fill="rgba(255,255,255,0.12)" stroke="rgba(255,255,255,0.22)" />
+                  <line x1="22" y1="32" x2="22" y2="56" stroke="#34d399" stroke-width="2" stroke-linecap="round" />
+                  <rect x="17" y="38" width="10" height="12" rx="2.5" fill="#10b981" />
+                  <line x1="42" y1="22" x2="42" y2="52" stroke="#34d399" stroke-width="2" stroke-linecap="round" />
+                  <rect x="37" y="28" width="10" height="17" rx="2.5" fill="#10b981" />
+                  <line x1="62" y1="14" x2="62" y2="46" stroke="#6ee7b7" stroke-width="2" stroke-linecap="round" />
+                  <rect x="57" y="19" width="10" height="20" rx="2.5" fill="#34d399" />
+                  <circle cx="77" cy="24" r="10" fill="rgba(255,255,255,0.2)" />
+                  <path d="M77 17L78.8 22.2L84 24L78.8 25.8L77 31L75.2 25.8L70 24L75.2 22.2L77 17Z" fill="#fff" />
+                </svg>
+              </div>
+              <div class="hero-actions">
+                <button id="goSyncBtn" class="btn btn-white flex-1">
+                  <span>اتصال با کلید اکستنشن</span>
+                  <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="m15 18-6-6 6-6" />
+                  </svg>
+                </button>
+                <a href="https://dollarino.pages.dev" target="_blank" rel="noopener noreferrer" class="btn btn-glass-light">دریافت کلید ↗</a>
+              </div>
+            </div>
+          </section>
+
+          <!-- Connected Hero Wallet & Engine Card -->
+          <section id="connectedHeroCard" class="hero-cobalt dot-grid-light hidden">
+            <div class="hero-content">
+              <div class="hero-badge-row">
+                <div id="botStatePill" class="hero-pill">
+                  <span id="botPulseDot" class="pulse-dot"></span>
+                  <span id="botStateLabel">آماده به‌کار</span>
+                </div>
+                <span id="botModeLabel" class="hero-tag">PAPER · FUTURES</span>
+              </div>
+
+              <div class="hero-balance-row">
+                <div>
+                  <span class="hero-sublabel">موجودی قابل معامله</span>
+                  <div id="balanceTotal" class="hero-balance tabular" dir="ltr">$0.00</div>
+                </div>
+                <div id="heroSparkWrap" class="hero-spark" aria-hidden="true"></div>
+              </div>
+
+              <div class="hero-metrics">
+                <div class="hero-metric-box">
+                  <span>سود باز (PnL)</span>
+                  <strong id="openPnl" class="tabular" dir="ltr">$0.00</strong>
+                </div>
+                <div class="hero-metric-box">
+                  <span>معامله فعال</span>
+                  <strong id="openCount" class="tabular" dir="ltr">0</strong>
+                </div>
+                <div class="hero-metric-box">
+                  <span>اهرم / حالت</span>
+                  <strong id="heroModeShort" class="tabular">DEMO</strong>
+                </div>
+              </div>
+            </div>
+          </section>
+
+          <!-- Action Controls Card -->
+          <section class="glass-card control-dock">
+            <button id="toggleBotBtn" class="btn btn-emerald flex-1">
+              <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M18.36 6.64a9 9 0 1 1-12.73 0" />
+                <line x1="12" y1="2" x2="12" y2="12" />
+              </svg>
+              <span>روشن کردن ربات</span>
+            </button>
+            <button id="aiScanBtn" class="btn btn-cobalt" title="اسکن فوری بازار با هوش مصنوعی">
+              <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="m12 3-1.912 5.813a2 2 0 0 1-1.275 1.275L3 12l5.813 1.912a2 2 0 0 1 1.275 1.275L12 21l1.912-5.813a2 2 0 0 1 1.275-1.275L21 12l-5.813-1.912a2 2 0 0 1-1.275-1.275L12 3Z" />
+              </svg>
+              <span>اسکن AI</span>
+            </button>
+            <button id="killSwitchBtn" class="btn btn-danger-soft" title="توقف اضطراری و بستن همه">
+              <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10" />
+                <path d="m14.5 9-5 5M9.5 9l5 5" />
+              </svg>
+              <span>توقف</span>
+            </button>
+          </section>
+
+          <!-- Open Positions Card -->
+          <section class="glass-card">
+            <div class="card-head">
+              <div class="head-title">
+                <span class="head-icon cobalt">
+                  <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+                    <polyline points="22 7 13.5 15.5 8.5 10.5 2 17" />
+                    <polyline points="16 7 22 7 22 13" />
+                  </svg>
+                </span>
+                <span>پوزیشن‌های باز و مدیریت آنی</span>
+              </div>
+              <a id="openWebLink" href="https://dollarino.pages.dev" target="_blank" rel="noopener noreferrer" class="link-pill">پنل کامل ↗</a>
+            </div>
+            <div id="positionsList" class="list-box">
+              <div class="empty-card">
+                <span class="empty-emoji">⚡</span>
+                <p>برای کنترل ربات و مشاهده معاملات باز، کلید اکستنشن را در تب «اتصال» ثبت کنید.</p>
+              </div>
+            </div>
+          </section>
+        </main>
+
+        <!-- TAB 2: LIVE MARKETS -->
+        <main id="tab-markets" class="tab-panel">
+          <section class="glass-card">
+            <div class="card-head">
+              <div class="head-title">
+                <span class="head-icon emerald">
+                  <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M3 3v18h18" />
+                    <path d="m19 9-5 5-4-4-3 3" />
+                  </svg>
+                </span>
+                <span>نبض زنده بازارهای فیوچرز</span>
+              </div>
+              <button id="refreshMarketsBtn" class="btn btn-ghost btn-xs">بروزرسانی</button>
+            </div>
+            <div class="search-wrap">
+              <input id="marketSearchInput" type="text" placeholder="فیلتر نماد (مثلاً BTC، ETH، SOL...)" />
+            </div>
+            <div class="chip-row">
+              <button class="chip market-chip active" data-filter="all">همه بازارها</button>
+              <button class="chip market-chip" data-filter="gainers">صعودی‌ها 🟢</button>
+              <button class="chip market-chip" data-filter="losers">نزولی‌ها 🔴</button>
+            </div>
+            <div id="marketsList" class="list-box tall"></div>
+          </section>
+        </main>
+
+        <!-- TAB 3: DEX RADAR & TRUST WALLET -->
+        <main id="tab-dex" class="tab-panel">
+          <section class="glass-card">
+            <div class="card-head">
+              <div class="head-title">
+                <span class="head-icon amber">
+                  <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+                    <circle cx="11" cy="11" r="8" />
+                    <path d="m21 21-4.3-4.3" />
+                  </svg>
+                </span>
+                <span>رادار میم‌کوین و سوآپ Trust Wallet</span>
+              </div>
+              <span class="badge-emerald">DEX زنده</span>
+            </div>
+            <div class="search-row">
+              <input id="dexSearchInput" type="text" placeholder="نام توکن، نماد یا آدرس کانترکت..." />
+              <button id="dexSearchBtn" class="btn btn-cobalt btn-sm">جستجو</button>
+            </div>
+            <div class="chip-row">
+              <button class="chip dex-chip active" data-q="">🔥 داغ‌ترین‌ها</button>
+              <button class="chip dex-chip" data-q="PEPE">PEPE</button>
+              <button class="chip dex-chip" data-q="SOL">SOL</button>
+              <button class="chip dex-chip" data-q="TON">TON</button>
+              <button class="chip dex-chip" data-q="BONK">BONK</button>
+              <button class="chip dex-chip" data-q="WIF">WIF</button>
+            </div>
+            <div id="dexList" class="list-box tall"></div>
+          </section>
+        </main>
+
+        <!-- TAB 4: SYNC, ACCOUNT & REFERRAL -->
+        <main id="tab-sync" class="tab-panel">
+          <!-- Connected Profile Summary -->
+          <section id="accountProfileCard" class="glass-card profile-card hidden">
+            <div class="profile-row">
+              <div id="profileAvatar" class="avatar-circle">D</div>
+              <div class="flex-1 min-w-0">
+                <div class="profile-name-row">
+                  <strong id="profileName">کاربر دلارینو</strong>
+                  <span id="profileVerifiedBadge" class="badge-emerald">تاییدشده</span>
+                </div>
+                <span id="profilePlanLine" class="brand-sub">حساب متصل و همگام با سایت</span>
+              </div>
+              <a href="https://dollarino.pages.dev" target="_blank" rel="noopener noreferrer" class="btn btn-ghost btn-xs">پروفایل ↗</a>
+            </div>
+          </section>
+
+          <!-- Step-by-Step Visual Key Connection -->
+          <section class="glass-card">
+            <div class="card-head">
+              <div class="head-title">
+                <span class="head-icon cobalt">
+                  <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+                    <rect width="18" height="11" x="3" y="11" rx="2" ry="2" />
+                    <path d="M7 11V7a5 5 0 0 1 10 0v4" />
+                  </svg>
+                </span>
+                <span>اتصال امن اکستنشن به حساب</span>
+              </div>
+              <span class="badge-cobalt">SHA-256</span>
+            </div>
+
+            <div class="steps-grid">
+              <div class="step-pill">
+                <span class="step-num">۱</span>
+                <span>دریافت کلید از سایت یا <b dir="ltr">@Dollarino_bot</b></span>
+              </div>
+              <div class="step-pill">
+                <span class="step-num">۲</span>
+                <span>چسباندن کلید <code dir="ltr">dlr_ext_...</code> در کادر زیر</span>
+              </div>
+              <div class="step-pill">
+                <span class="step-num">۳</span>
+                <span>ذخیره و کنترل زنده ربات بدون ورود مجدد</span>
+              </div>
+            </div>
+
+            <label class="field">
+              <span>آدرس سرور وب دلارینو</span>
+              <input id="apiBaseInput" type="url" dir="ltr" placeholder="https://dollarino.pages.dev" />
+            </label>
+
+            <label class="field">
+              <span>کلید اختصاصی اکستنشن</span>
+              <div class="input-with-btn">
+                <input id="extKeyInput" type="password" dir="ltr" placeholder="dlr_ext_..." />
+                <button id="toggleKeyVisBtn" type="button" class="eye-btn" title="نمایش / مخفی کردن کلید">
+                  <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7Z" />
+                    <circle cx="12" cy="12" r="3" />
+                  </svg>
+                </button>
+              </div>
+            </label>
+
+            <div class="btn-row">
+              <button id="saveConfigBtn" class="btn btn-cobalt flex-1">ذخیره و اتصال زنده</button>
+              <button id="clearConfigBtn" class="btn btn-ghost">قطع اتصال</button>
+            </div>
+          </section>
+
+          <!-- Referral Partner Club Card (matches ServicesPage/Wallet look) -->
+          <section id="referralBox" class="glass-card referral-card hidden">
+            <div class="card-head">
+              <div class="head-title">
+                <span class="head-icon amber">🎁</span>
+                <span>باشگاه رفرال و درآمد دلاری</span>
+              </div>
+              <span id="refTierBadge" class="badge-emerald">تا ۲۲٪</span>
+            </div>
+            <p class="hint">با معرفی هر دوست با پرداخت موفق، تا ۲۲٪ پورسانت نقدی + ۷ روز اشتراک هدیه بگیرید.</p>
+            <div class="ref-row">
+              <code id="refCodeText" dir="ltr">—</code>
+              <button id="copyRefBtn" class="btn btn-emerald btn-sm">کپی لینک</button>
+            </div>
+          </section>
+        </main>
+      </div>
+
+      <!-- Bottom Status Pill -->
+      <footer class="foot glass-panel">
+        <div class="foot-status">
+          <span id="toastDot" class="toast-dot"></span>
+          <span id="toastText">آماده به کار · Dollarino v9.7</span>
+        </div>
+        <div class="foot-links">
+          <a href="https://t.me/Dollarino_bot" target="_blank" rel="noopener noreferrer" class="link-pill" dir="ltr">@Dollarino_bot</a>
+        </div>
+      </footer>
+    </div>
+    <script src="popup.js"></script>
+  </body>
+</html>

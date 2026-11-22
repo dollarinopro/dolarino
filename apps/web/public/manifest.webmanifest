@@ -1,0 +1,78 @@
+{
+  "name": "دلارینو — دستیار هوشمند ترید کریپتو، Trust Wallet و DEX",
+  "short_name": "Dollarino",
+  "description": "ترید خودکار با ۴ موتور هوشمند، کیف‌پول Trust Wallet DApp، رادار DexScreener و ویجت کنترل سریع موبایل",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "display_override": ["window-controls-overlay", "standalone", "minimal-ui"],
+  "orientation": "any",
+  "background_color": "#040814",
+  "theme_color": "#0C44C8",
+  "dir": "rtl",
+  "lang": "fa",
+  "categories": ["finance", "productivity", "utilities"],
+  "shortcuts": [
+    {
+      "name": "روشن / خاموش فوری ربات",
+      "short_name": "کنترل ربات",
+      "description": "تغییر وضعیت آنی ربات تریدر دلارینو از صفحه اصلی گوشی",
+      "url": "/?quick=bot-toggle",
+      "icons": [{ "src": "/icons/icon-192.png", "sizes": "192x192", "type": "image/png" }]
+    },
+    {
+      "name": "گزارش سریع سود و موجودی",
+      "short_name": "گزارش سود",
+      "description": "مشاهده موجودی، معاملات باز و سود ۲۴ ساعته",
+      "url": "/?quick=report",
+      "icons": [{ "src": "/icons/icon-192.png", "sizes": "192x192", "type": "image/png" }]
+    },
+    {
+      "name": "رادار DexScreener و Trust Wallet",
+      "short_name": "رادار DEX",
+      "description": "اسکن توکن‌های داغ غیرمتمرکز و سوآپ مستقیم در تراست‌ولت",
+      "url": "/?quick=dex",
+      "icons": [{ "src": "/icons/icon-192.png", "sizes": "192x192", "type": "image/png" }]
+    },
+    {
+      "name": "توقف اضطراری (Kill Switch)",
+      "short_name": "Kill Switch",
+      "description": "توقف فوری ربات و بستن ایمن پوزیشن‌ها",
+      "url": "/?quick=kill-switch",
+      "icons": [{ "src": "/icons/icon-192.png", "sizes": "192x192", "type": "image/png" }]
+    }
+  ],
+  "widgets": [
+    {
+      "name": "Dollarino Quick Control",
+      "short_name": "Dollarino",
+      "description": "ویجت کنترل سریع روشن/خاموش ربات و وضعیت سود دلارینو",
+      "tag": "dollarino-quick-control",
+      "ms_ac_template": "widgets/quick-control.json",
+      "data": "/api/trading/overview",
+      "type": "application/json",
+      "update": 300,
+      "icons": [{ "src": "/icons/icon-192.png", "sizes": "192x192", "type": "image/png" }]
+    }
+  ],
+  "icons": [
+    {
+      "src": "/icons/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/icons/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/icons/icon-maskable-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    }
+  ]
+}

@@ -1,0 +1,30 @@
+{
+  "type": "AdaptiveCard",
+  "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
+  "version": "1.5",
+  "body": [
+    {
+      "type": "TextBlock",
+      "text": "Dollarino Quick Control",
+      "weight": "Bolder",
+      "size": "Medium"
+    },
+    {
+      "type": "TextBlock",
+      "text": "وضعیت: ${config.bot_state} · موجودی: $${balance.total}",
+      "wrap": true
+    }
+  ],
+  "actions": [
+    {
+      "type": "Action.OpenUrl",
+      "title": "کنترل ربات",
+      "url": "/?quick=bot-toggle"
+    },
+    {
+      "type": "Action.OpenUrl",
+      "title": "رادار DEX",
+      "url": "/?quick=dex"
+    }
+  ]
+}
