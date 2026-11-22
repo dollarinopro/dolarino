@@ -103,7 +103,7 @@ app.get('/', (c) => {
 
 app.get('/api/health', (c) => {
   try {
-    c.executionCtx.waitUntil(syncTelegramBotAutoOnVersion(c.env, '9.9.3').catch(() => {}));
+    c.executionCtx.waitUntil(syncTelegramBotAutoOnVersion(c.env, '9.9.4').catch(() => {}));
   } catch {
     // ignore outside worker executionCtx
   }
