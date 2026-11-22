@@ -2,7 +2,7 @@ import { atr, ema, rsi, type AIProviderId, type Timeframe } from '@dollarino/cor
 import { decryptVaultJson, randomId } from '../crypto.js';
 import type { Env } from '../env.js';
 import { fetchPublicKlines, fetchPublicMarket24h } from '../exchanges/paper.js';
-import { resolveAIEnsemble, type AIRecord } from './providers.js';
+import { discoverGatewayChatModels, resolveAIEnsemble, type AIRecord } from './providers.js';
 
 export const DOLLARINO_CREATOR_INFO = {
   nameFa: 'آوید کیا',
@@ -458,8 +458,19 @@ export async function callMultimodalChatAI(
   const rawBase = (ai.baseUrl || defaultBase).replace(/\/+$/, '');
   const endpoint = rawBase.endsWith('/chat/completions') ? rawBase : `${rawBase}/chat/completions`;
   const primaryModel = ai.model || (ai.provider === 'deepseek' ? 'deepseek-chat' : 'gpt-4o-mini');
-  const candidateModels = rawBase.includes('hilinkup.com')
-    ? Array.from(new Set([primaryModel, 'baidu/deepseek-v4.1-flash-1017', 'deepseek/deepseek-v4.1-flash-1017', 'doubao/deepseek-v4.1-flash-1017']))
+  const isHilinkup = rawBase.includes('hilinkup.com');
+  const candidateModels = isHilinkup
+    ? Array.from(
+        new Set([
+          primaryModel,
+          'baidu/deepseek-v4.1-flash-1017',
+          'deepseek/deepseek-v4.1-flash-1017',
+          'doubao/deepseek-v4.1-flash-1017',
+          'deepseek-chat',
+          'deepseek-v3',
+          'gpt-4o-mini',
+        ])
+      )
     : ai.provider === 'deepseek'
       ? Array.from(new Set([primaryModel, 'deepseek-chat']))
       : [primaryModel];
@@ -481,8 +492,7 @@ export async function callMultimodalChatAI(
     messages.push({ role: 'user', content: currentText });
   }
 
-  let lastGatewayErr = '';
-  for (const model of candidateModels) {
+  const attemptChat = async (model: string, includeThinkingFlag: boolean): Promise<{ ok: boolean; content?: string; err?: string; status: number }> => {
     const isReasoningModel =
       model.includes('deepseek-v4') ||
       model.includes('reasoner') ||
@@ -494,7 +504,7 @@ export async function callMultimodalChatAI(
       max_tokens: isReasoningModel ? Math.max(ai.maxTokens || 2600, 2600) : Math.max(ai.maxTokens || 2048, 2048),
       messages,
     };
-    if (rawBase.includes('hilinkup.com') && (model.includes('flash-1017') || model.includes('deepseek-v4'))) {
+    if (includeThinkingFlag && isHilinkup && (model.includes('flash-1017') || model.includes('deepseek-v4'))) {
       payload.thinking = { type: 'disabled' };
     }
     if (!isReasoningModel) {
@@ -510,16 +520,49 @@ export async function callMultimodalChatAI(
       body: JSON.stringify(payload),
       signal: AbortSignal.timeout(40_000),
     });
-    const json = (await res.json()) as {
-      choices?: Array<{ message?: { content?: string; reasoning_content?: string } }>;
-      error?: { message?: string };
-    };
-    if (res.ok) {
-      return json.choices?.[0]?.message?.content || json.choices?.[0]?.message?.reasoning_content || '';
+    const rawText = await res.text();
+    let json: { choices?: Array<{ message?: { content?: string; reasoning_content?: string } }>; error?: { message?: string } } = {};
+    try {
+      json = JSON.parse(rawText);
+    } catch {
+      // non-JSON upstream error
     }
-    lastGatewayErr = json.error?.message ?? `AI Gateway HTTP ${res.status}`;
-    if (!/model|not found|unsupported/i.test(lastGatewayErr)) {
-      throw new Error(lastGatewayErr);
+    if (res.ok) {
+      const content = json.choices?.[0]?.message?.content || json.choices?.[0]?.message?.reasoning_content || '';
+      if (content.trim()) return { ok: true, content, status: res.status };
+      return { ok: false, err: 'Empty AI response content', status: res.status };
+    }
+    const errMsg = json.error?.message || rawText.slice(0, 180) || `AI Gateway HTTP ${res.status}`;
+    return { ok: false, err: errMsg, status: res.status };
+  };
+
+  let lastGatewayErr = '';
+  const triedModels = new Set<string>();
+  const runList = async (modelsToTry: string[]): Promise<string | null> => {
+    for (const model of modelsToTry) {
+      if (triedModels.has(model)) continue;
+      triedModels.add(model);
+      let out = await attemptChat(model, true);
+      if (!out.ok && isHilinkup && (out.status === 400 || out.status === 422) && (model.includes('flash-1017') || model.includes('deepseek-v4'))) {
+        out = await attemptChat(model, false);
+      }
+      if (out.ok && out.content) return out.content;
+      lastGatewayErr = out.err || `AI Gateway HTTP ${out.status}`;
+      if (out.status === 401 || out.status === 403 || /invalid api key|unauthorized|insufficient.*quota|balance/i.test(lastGatewayErr)) {
+        throw new Error(lastGatewayErr);
+      }
+    }
+    return null;
+  };
+
+  const firstPass = await runList(candidateModels);
+  if (firstPass) return firstPass;
+
+  if (isHilinkup) {
+    const discovered = await discoverGatewayChatModels(rawBase, ai.apiKey);
+    if (discovered.length > 0) {
+      const secondPass = await runList(discovered);
+      if (secondPass) return secondPass;
     }
   }
   throw new Error(lastGatewayErr || 'AI Gateway error');
