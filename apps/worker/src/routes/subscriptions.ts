@@ -44,11 +44,114 @@ export interface UserEntitlement {
   subscriptionRequired: boolean;
 }
 
+const FALLBACK_PUBLIC_PLANS: SubscriptionPlanRow[] = [
+  {
+    code: 'pro_monthly',
+    name_fa: 'اشتراک حرفه‌ای ماهانه (Pro)',
+    name_en: 'Pro Monthly',
+    description_fa: 'دسترسی کامل به هوش مصنوعی دلارینو، استراتژی منتخب دلارینو و کپی ترید دلارینو',
+    description_en: 'Full Dollarino AI, Dollarino Select (Dorna V1) & Dollarino Copy-Trade on Toobit & KCEX',
+    price_usd: 20,
+    price_toman: 1400000,
+    duration_days: 30,
+    max_live_exchanges: 2,
+    allow_ai_trading: 1,
+    allow_codexbot: 1,
+    allow_copy_trade: 1,
+    allow_live_trading: 1,
+    features_json: JSON.stringify([
+      'ترید خودکار با هوش مصنوعی دلارینو (بدون نیاز به API شخصی)',
+      'استراتژی منتخب دلارینو با اسکن آزاد کل بازار (۳۰+ ارز)',
+      'کپی ترید دلارینو خودکار از کانال تلگرام و وب‌هوک',
+      'اتصال همزمان صرافی‌های Toobit و KCEX + حساب دمو',
+    ]),
+    is_popular: 1,
+    is_active: 1,
+    sort_order: 2,
+  },
+  {
+    code: 'vip_quarterly',
+    name_fa: 'اشتراک ویژه ۳ ماهه (VIP)',
+    name_en: 'VIP Quarterly (3 Months)',
+    description_fa: '۹۰ روز دسترسی کامل به تمام امکانات + اسکن سریع کل بازار و پشتیبانی اختصاصی',
+    description_en: '90 days full VIP access with multi-coin priority scanning & dedicated support',
+    price_usd: 50,
+    price_toman: 3450000,
+    duration_days: 90,
+    max_live_exchanges: 5,
+    allow_ai_trading: 1,
+    allow_codexbot: 1,
+    allow_copy_trade: 1,
+    allow_live_trading: 1,
+    features_json: JSON.stringify([
+      '۹۰ روز دسترسی کامل به هوش مصنوعی، استراتژی منتخب و کپی ترید دلارینو',
+      'اولویت پردازش چندارزی و تا ۲۰ پوزیشن همزمان',
+      'راه‌اندازی اختصاصی رله Toobit و ربات تلگرام',
+      'پشتیبانی مستقیم مدیریت و بروزرسانی‌های جدید',
+    ]),
+    is_popular: 0,
+    is_active: 1,
+    sort_order: 3,
+  },
+  {
+    code: 'pro_semiannual',
+    name_fa: 'اشتراک ۶ ماهه (نصف‌سال)',
+    name_en: 'Semiannual (6 Months)',
+    description_fa: '۱۸۰ روز دسترسی کامل به اتوترید، کپی‌ترید، هوش مصنوعی و صرافی‌ها با ۲۵٪ تخفیف',
+    description_en: '180 days full AI, Strategy & Toobit/KCEX access (25% savings)',
+    price_usd: 90,
+    price_toman: 6200000,
+    duration_days: 180,
+    max_live_exchanges: 5,
+    allow_ai_trading: 1,
+    allow_codexbot: 1,
+    allow_copy_trade: 1,
+    allow_live_trading: 1,
+    features_json: JSON.stringify([
+      '۱۸۰ روز دسترسی نامحدود به تمام امکانات حرفه‌ای',
+      'اتوترید و کپی‌ترید خودکار تلگرام بدون محدودیت',
+      'تحلیل چارت با هوش مصنوعی مرکزی دلارینو',
+      'صرفه‌جویی ۳۰ دلار نسبت به خرید ماهانه',
+    ]),
+    is_popular: 0,
+    is_active: 1,
+    sort_order: 4,
+  },
+  {
+    code: 'pro_annual',
+    name_fa: 'اشتراک سالانه (۱۲ ماهه)',
+    name_en: 'Annual (12 Months)',
+    description_fa: '۳۶۵ روز دسترسی کامل طلایی با ۳۳٪ تخفیف ویژه معامله‌گران مداوم',
+    description_en: '365 days full access with maximum 33% annual savings',
+    price_usd: 160,
+    price_toman: 11000000,
+    duration_days: 365,
+    max_live_exchanges: 10,
+    allow_ai_trading: 1,
+    allow_codexbot: 1,
+    allow_copy_trade: 1,
+    allow_live_trading: 1,
+    features_json: JSON.stringify([
+      '۳۶۵ روز دسترسی کامل به تمام موتورها و صرافی‌ها',
+      'اولویت پردازش سیگنال و رله اختصاصی',
+      'پشتیبانی مستقیم تیم فنی دلارینو',
+      'بیشترین تخفیف سالانه (۸۰ دلار صرفه‌جویی)',
+    ]),
+    is_popular: 0,
+    is_active: 1,
+    sort_order: 5,
+  },
+];
+
 export async function getPublicPlans(db: D1Database): Promise<SubscriptionPlanRow[]> {
-  const rows = await db.prepare(
-    `SELECT * FROM subscription_plans WHERE is_active = 1 AND price_usd > 0 ORDER BY sort_order ASC`
-  ).all<SubscriptionPlanRow>().catch(() => ({ results: [] as SubscriptionPlanRow[] }));
-  return rows.results;
+  try {
+    const rows = await db
+      .prepare(`SELECT * FROM subscription_plans WHERE is_active = 1 AND price_usd > 0 ORDER BY sort_order ASC`)
+      .all<SubscriptionPlanRow>();
+    return rows.results.length > 0 ? rows.results : FALLBACK_PUBLIC_PLANS;
+  } catch {
+    return FALLBACK_PUBLIC_PLANS;
+  }
 }
 
 export async function requirePaidEntitlement(

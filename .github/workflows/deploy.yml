@@ -21,25 +21,88 @@ jobs:
         env:
           VITE_API_BASE: ${{ vars.VITE_API_BASE }}
         run: npm run build
+      - name: Check Cloudflare Credentials
+        id: cf
+        env:
+          CF_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: |
+          if [ -n "$CF_TOKEN" ]; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Ensure D1 Database Exists & Sync database_id
+        if: steps.cf.outputs.enabled == 'true'
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          if [ -z "$CLOUDFLARE_ACCOUNT_ID" ]; then unset CLOUDFLARE_ACCOUNT_ID; fi
+          DB_ID=$(npx wrangler d1 list --json | node -e '
+            const list = JSON.parse(require("fs").readFileSync(0, "utf8"));
+            const db = list.find((d) => d.name === "dollarino-db");
+            if (db && db.uuid) process.stdout.write(db.uuid);
+          ')
+          if [ -z "$DB_ID" ]; then
+            echo "Creating D1 database dollarino-db..."
+            npx wrangler d1 create dollarino-db
+            DB_ID=$(npx wrangler d1 list --json | node -e '
+              const list = JSON.parse(require("fs").readFileSync(0, "utf8"));
+              const db = list.find((d) => d.name === "dollarino-db");
+              if (db && db.uuid) process.stdout.write(db.uuid);
+            ')
+          fi
+          if [ -z "$DB_ID" ]; then
+            echo "Failed to resolve dollarino-db UUID" >&2
+            exit 1
+          fi
+          echo "Resolved dollarino-db UUID: $DB_ID"
+          node -e '
+            const fs = require("fs");
+            const dbId = process.argv[1];
+            const toml = fs.readFileSync("wrangler.toml", "utf8");
+            const updated = toml.replace(/database_id\s*=\s*"[^"]*"/, `database_id = "${dbId}"`);
+            fs.writeFileSync("wrangler.toml", updated);
+          ' "$DB_ID"
       - name: Apply D1 Migrations (Remote)
-        if: ${{ secrets.CLOUDFLARE_API_TOKEN != '' }}
-        uses: cloudflare/wrangler-action@v3
-        with:
-          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          command: d1 migrations apply dollarino-db --remote
-      - name: Deploy Cloudflare Worker (v9.6 API + DO + Assets)
-        if: ${{ secrets.CLOUDFLARE_API_TOKEN != '' }}
-        uses: cloudflare/wrangler-action@v3
-        with:
-          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          command: deploy
+        if: steps.cf.outputs.enabled == 'true'
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          if [ -z "$CLOUDFLARE_ACCOUNT_ID" ]; then unset CLOUDFLARE_ACCOUNT_ID; fi
+          npx wrangler d1 migrations apply dollarino-db --remote
+      - name: Deploy Cloudflare Worker (API + DO + Assets)
+        if: steps.cf.outputs.enabled == 'true'
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          if [ -z "$CLOUDFLARE_ACCOUNT_ID" ]; then unset CLOUDFLARE_ACCOUNT_ID; fi
+          npx wrangler deploy
+      - name: Sync Optional Worker Runtime Secrets
+        if: steps.cf.outputs.enabled == 'true'
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          SESSION_JWT_SECRET: ${{ secrets.SESSION_JWT_SECRET }}
+          MASTER_ENCRYPTION_KEY: ${{ secrets.MASTER_ENCRYPTION_KEY }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          HILINKUP_API_KEY: ${{ secrets.HILINKUP_API_KEY }}
+        run: |
+          if [ -z "$CLOUDFLARE_ACCOUNT_ID" ]; then unset CLOUDFLARE_ACCOUNT_ID; fi
+          for KEY in SESSION_JWT_SECRET MASTER_ENCRYPTION_KEY TELEGRAM_BOT_TOKEN HILINKUP_API_KEY; do
+            VAL="${!KEY}"
+            if [ -n "$VAL" ]; then
+              printf '%s' "$VAL" | npx wrangler secret put "$KEY"
+            fi
+          done
       - name: Deploy Cloudflare Pages Frontend + Functions Proxy
-        if: ${{ secrets.CLOUDFLARE_API_TOKEN != '' && vars.SKIP_PAGES_DEPLOY != 'true' }}
-        uses: cloudflare/wrangler-action@v3
-        with:
-          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          workingDirectory: apps/web
-          command: pages deploy dist --project-name=dollarino
+        if: steps.cf.outputs.enabled == 'true' && vars.SKIP_PAGES_DEPLOY != 'true'
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        working-directory: apps/web
+        run: |
+          if [ -z "$CLOUDFLARE_ACCOUNT_ID" ]; then unset CLOUDFLARE_ACCOUNT_ID; fi
+          npx wrangler pages deploy dist --project-name="${{ vars.CLOUDFLARE_PAGES_PROJECT || 'dolarino' }}" --branch=main

@@ -5,6 +5,15 @@
 /index.html
   Cache-Control: public, max-age=0, must-revalidate
 
+/robots.txt
+  Content-Type: text/plain; charset=utf-8
+  Cache-Control: public, max-age=3600
+
+/dollarino-preview.jpg
+  Content-Type: image/jpeg
+  Access-Control-Allow-Origin: *
+  Cache-Control: public, max-age=86400
+
 /images/*
   Access-Control-Allow-Origin: *
   Cache-Control: public, max-age=86400

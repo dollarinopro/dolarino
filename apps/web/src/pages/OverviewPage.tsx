@@ -248,12 +248,24 @@ export function OverviewPage({
   const patchConfig = async (payload: Record<string, unknown>, okMsg?: string) => {
     setBusy(true);
     try {
-      const res = await apiFetch<{ config?: unknown; error?: string }>('/api/trading/config', {
+      const res = await apiFetch<{
+        config?: unknown;
+        switchedFrom?: { cancelledCopyCount?: number; stoppedBot?: boolean; disabledMyAi?: boolean } | null;
+        error?: string;
+      }>('/api/trading/config', {
         method: 'PATCH',
         body: JSON.stringify(payload),
       });
       if (res.error) toastMsg(res.error, true);
-      else if (okMsg) toastMsg(okMsg);
+      else if (okMsg) {
+        const extra =
+          (res.switchedFrom?.cancelledCopyCount ?? 0) > 0
+            ? isFa
+              ? ' (کپی‌ترید قبلی برای جلوگیری از تداخل متوقف شد)'
+              : ' (previous copy-trade stopped)'
+            : '';
+        toastMsg(`${okMsg}${extra}`);
+      }
       await onRefresh();
     } catch (e) {
       toastMsg(e instanceof Error ? e.message : 'Update failed', true);
@@ -566,12 +578,15 @@ export function OverviewPage({
               }
               setBusy(true);
               try {
-                const targetStrategy = useMyAi ? 'my_custom_ai' : 'ai_autonomous_agent';
+                const targetStrategy =
+                  activeStrategy === 'copy_trade' || !activeStrategy
+                    ? 'ai_autonomous_agent'
+                    : activeStrategy;
                 await apiFetch('/api/trading/config', {
                   method: 'PATCH',
                   body: JSON.stringify({
                     strategy_key: targetStrategy,
-                    ai_gate_enabled: 1,
+                    ai_gate_enabled: targetStrategy === 'ai_autonomous_agent' || targetStrategy === 'my_custom_ai' ? 1 : 0,
                     auto_scan_top: 1,
                     scan_scope: 'ALL_MARKET',
                   }),
@@ -581,7 +596,11 @@ export function OverviewPage({
                   body: JSON.stringify({ strategyKey: targetStrategy, scanScope: 'ALL_MARKET' }),
                 });
                 tgNotifyHaptic('success');
-                toastMsg(isFa ? 'ترید هوشمند اتومات AI روشن شد!' : 'Automated AI Trading started!');
+                toastMsg(
+                  isFa
+                    ? 'موتور انتخابی روشن شد و سایر موتورها برای جلوگیری از تداخل غیرفعال شدند!'
+                    : 'Selected trading engine started (other engines paused)!'
+                );
                 await onRefresh();
               } catch (e) {
                 toastMsg(e instanceof Error ? e.message : 'Subscription required', true);
@@ -607,11 +626,18 @@ export function OverviewPage({
             </span>
           </button>
 
-          {/* Select 4 Core Dollarino Engines */}
+          {/* Select 4 Core Dollarino Engines (Strict Single-Engine Mutual Exclusion) */}
           <div className="space-y-2">
-            <p className="text-[11px] font-black text-dim">
-              {isFa ? '۱. انتخاب از ۴ موتور اصلی دلارینو:' : '1. Choose Dollarino Engine:'}
-            </p>
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <p className="text-[11px] font-black text-dim">
+                {isFa ? '۱. انتخاب از ۴ موتور اصلی دلارینو:' : '1. Choose Dollarino Engine:'}
+              </p>
+              <span className="text-[10px] font-bold px-2.5 py-0.5 rounded-full bg-amber-500/12 text-amber-500">
+                {isFa
+                  ? '🔒 حالت تک‌موتوره: همزمان فقط ۱ موتور کار می‌کند'
+                  : '🔒 Single-Engine: Only 1 engine runs at a time'}
+              </span>
+            </div>
             <div className="grid sm:grid-cols-2 gap-2.5">
               <button
                 type="button"

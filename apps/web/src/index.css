@@ -721,16 +721,131 @@ input[type='range']::-webkit-slider-thumb {
 }
 
 @media (prefers-reduced-transparency: reduce) {
-  .dock-glass-body {
+  .dock-glass-body,
+  .liquid-orb,
+  .liquid-ai-sheet {
     backdrop-filter: none;
     -webkit-backdrop-filter: none;
     background: var(--solid);
   }
 }
 @supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
-  .dock-glass-body {
+  .dock-glass-body,
+  .liquid-orb,
+  .liquid-ai-sheet {
     background: var(--solid);
   }
+}
+
+/* ==========================================================================
+   LIQUID GLASS FLOATING AI ORB & SHEET — APPLE iOS 26 CUPERTINO REFRACTIVE GLASS
+   ========================================================================== */
+@keyframes liquid-orb-caustic {
+  0%, 100% {
+    transform: rotate(0deg) scale(1);
+    opacity: 0.78;
+  }
+  50% {
+    transform: rotate(180deg) scale(1.03);
+    opacity: 0.96;
+  }
+}
+
+.liquid-orb {
+  position: relative;
+  overflow: visible;
+  isolation: isolate;
+  background:
+    radial-gradient(110% 80% at 28% 12%, rgba(255, 255, 255, 0.56) 0%, rgba(255, 255, 255, 0.08) 44%, transparent 64%),
+    radial-gradient(85% 70% at 76% 86%, rgba(56, 189, 248, 0.24) 0%, transparent 64%),
+    radial-gradient(70% 60% at 18% 82%, rgba(245, 165, 36, 0.18) 0%, transparent 62%),
+    linear-gradient(160deg, var(--glass-a) 0%, var(--glass-b) 100%);
+  -webkit-backdrop-filter: blur(28px) saturate(240%) brightness(1.1) contrast(1.05);
+  backdrop-filter: blur(28px) saturate(240%) brightness(1.1) contrast(1.05);
+  border: 1.25px solid var(--glass-border);
+  box-shadow:
+    inset 0 2px 3px var(--rim),
+    inset 0 -3px 8px rgba(22, 82, 240, 0.18),
+    inset 2px 0 4px var(--rim-soft),
+    inset -2px 0 4px rgba(56, 189, 248, 0.22),
+    0 14px 34px rgba(10, 18, 38, 0.28),
+    0 4px 14px rgba(22, 82, 240, 0.2);
+}
+
+.liquid-orb::before {
+  content: '';
+  position: absolute;
+  inset: 2px 7px auto 7px;
+  height: 46%;
+  border-radius: 9999px;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.82) 0%, rgba(255, 255, 255, 0.16) 52%, rgba(255, 255, 255, 0) 100%);
+  opacity: 0.76;
+  pointer-events: none;
+  z-index: 1;
+}
+
+.liquid-orb::after {
+  content: '';
+  position: absolute;
+  inset: -1.5px;
+  border-radius: inherit;
+  padding: 1.5px;
+  background: conic-gradient(
+    from 215deg,
+    rgba(255, 255, 255, 0.85) 0deg,
+    rgba(56, 189, 248, 0.55) 75deg,
+    rgba(255, 255, 255, 0.16) 150deg,
+    rgba(245, 165, 36, 0.48) 235deg,
+    rgba(255, 255, 255, 0.85) 360deg
+  );
+  -webkit-mask:
+    linear-gradient(#000 0 0) content-box,
+    linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask-composite: exclude;
+  pointer-events: none;
+  animation: liquid-orb-caustic 9s linear infinite;
+  z-index: 2;
+}
+
+.liquid-orb-core {
+  width: 44px;
+  height: 44px;
+  border-radius: 9999px;
+  display: grid;
+  place-items: center;
+  background:
+    radial-gradient(100% 90% at 32% 18%, rgba(255, 255, 255, 0.42) 0%, transparent 58%),
+    linear-gradient(160deg, rgba(255, 255, 255, 0.16) 0%, rgba(22, 82, 240, 0.12) 100%);
+  border: 1px solid var(--rim-soft);
+  box-shadow:
+    inset 0 1px 2px var(--rim),
+    inset 0 -2px 4px rgba(10, 18, 38, 0.18);
+}
+
+.liquid-orb:hover {
+  box-shadow:
+    inset 0 2px 3.5px var(--rim),
+    inset 0 -3px 9px rgba(56, 189, 248, 0.26),
+    0 18px 40px rgba(10, 18, 38, 0.34),
+    0 0 24px rgba(56, 189, 248, 0.3);
+}
+
+.liquid-orb:active {
+  transform: scale(0.94);
+}
+
+.liquid-ai-sheet {
+  background:
+    radial-gradient(120% 80% at 50% -12%, rgba(255, 255, 255, 0.36), transparent 58%),
+    linear-gradient(175deg, var(--glass-a) 0%, var(--panel-translucent) 100%);
+  -webkit-backdrop-filter: blur(26px) saturate(210%) brightness(1.04);
+  backdrop-filter: blur(26px) saturate(210%) brightness(1.04);
+  border: 1px solid var(--glass-border);
+  box-shadow:
+    inset 0 1px 1.5px var(--rim),
+    0 24px 56px rgba(10, 18, 38, 0.28),
+    0 4px 16px rgba(22, 82, 240, 0.14);
 }
 @media (prefers-reduced-motion: reduce) {
   .liquid-tab,

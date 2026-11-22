@@ -161,8 +161,8 @@ export function MyAiPage({
         ok: true,
         text: nextActive
           ? isFa
-            ? 'هوش مصنوعی شخصی شما فعال شد و الان مطابق قوانین آموزش‌داده‌شده ترید می‌کند!'
-            : 'Your personal AI is active and trading autonomously!'
+            ? 'هوش مصنوعی شخصی شما فعال شد! (سایر موتورهای ترید و کپی‌ترید برای جلوگیری از تداخل متوقف شدند)'
+            : 'Your personal AI is active (other trading engines/copy-trade paused)!'
           : isFa
             ? 'هوش مصنوعی شخصی متوقف شد.'
             : 'Personal AI paused.',

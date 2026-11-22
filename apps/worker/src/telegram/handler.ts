@@ -10,6 +10,7 @@ import { ensureUserDefaults, syncTelegramAvatarForUser } from '../auth.js';
 import { encryptVaultJson, hashPassword, hmacSha256Hex, maskSecret, randomId, sha256Hex } from '../crypto.js';
 import { fetchDexTrendingOverview, searchDexPairs, type DexTokenEnriched } from '../dex/screener.js';
 import { confirmAndMirrorCopyTrade } from '../engine/copy-mirror.js';
+import { activateExclusiveTradingEngine, type TradingEngineChoice } from '../engine/exclusive-engine.js';
 import { executeSignalForUser, type UserBotConfigRow } from '../engine/executor.js';
 import type { AuthUser, Env } from '../env.js';
 import { resolveUserExchangeAdapter } from '../exchanges/factory.js';
@@ -72,6 +73,8 @@ interface TelegramUpdate {
     caption?: string;
     photo?: Array<{ file_id: string }>;
     document?: { file_id: string; mime_type?: string; file_name?: string };
+    forward_from_chat?: { id: number; title?: string; username?: string; type: string };
+    forward_origin?: { type: string; chat?: { id: number; title?: string; username?: string; type: string } };
     contact?: {
       phone_number: string;
       first_name?: string;
@@ -84,6 +87,11 @@ interface TelegramUpdate {
     from: { id: number; first_name?: string; username?: string };
     message?: { chat: { id: number }; message_id: number };
     data?: string;
+  };
+  my_chat_member?: {
+    chat: { id: number; type: string; title?: string; username?: string };
+    from?: { id: number; first_name?: string; username?: string };
+    new_chat_member?: { status: string; can_post_messages?: boolean };
   };
   channel_post?: {
     message_id: number;
@@ -347,6 +355,19 @@ async function startBotOneClickForTelegram(params: {
   const nextState = cfg?.trading_mode === 'LIVE' && provider !== 'paper' ? 'RUNNING_LIVE' : 'RUNNING_PAPER';
   const effectiveTradingMode = provider === 'paper' ? 'PAPER' : (cfg?.trading_mode || 'PAPER');
 
+  const engineChoice: TradingEngineChoice =
+    targetStrategy === 'ai_autonomous_agent'
+      ? 'CENTRAL_AI'
+      : targetStrategy === 'my_custom_ai'
+        ? 'MY_AI'
+        : targetStrategy === 'copy_trade'
+          ? 'COPY_TRADE'
+          : 'STRATEGY';
+  const excl = await activateExclusiveTradingEngine(env.DB, user.id, engineChoice, {
+    strategyKey: targetStrategy,
+    auditSource: 'telegram_start',
+  });
+
   await env.DB.prepare(
     `UPDATE bot_configs
      SET strategy_key = ?, trade_execution_mode = 'AUTO', auto_scan_top = 1, scan_scope = 'ALL_MARKET',
@@ -375,6 +396,10 @@ async function startBotOneClickForTelegram(params: {
     cfg?.trading_mode === 'LIVE' && provider === 'paper'
       ? '\n⚠️ توجه: صرافی واقعی فعالی متصل نیست (یا Toobit نیاز به پروکسی دارد)؛ بنابراین ربات فعلاً روی **شبیه‌ساز Paper** ترید خودکار انجام می‌دهد.'
       : '';
+  const exclNote =
+    excl.cancelledCopyCount > 0 || excl.disabledMyAi
+      ? '\n🔒 **حالت تک‌موتوره:** برای جلوگیری از تداخل معاملات، کپی‌ترید و موتورهای قبلی به‌صورت خودکار متوقف شدند.'
+      : '';
 
   const text =
     `🟢 **ربات ترید خودکار دلارینو روشن شد و فعال است!**\n\n` +
@@ -384,6 +409,7 @@ async function startBotOneClickForTelegram(params: {
     `• موجودی آزاد: $${Number(bal.free || 0).toLocaleString('en-US', { maximumFractionDigits: 2 })}\n` +
     `• معاملات باز فعلی: ${openCountRow?.cnt ?? 0}\n\n` +
     `🔍 اسکن خودکار کل بازار هر ۱۵ ثانیه در حال اجراست و به‌محض یافتن نقطه ورود مطمئن، معامله با حد ضرر و ۳ تارگت خودکار باز می‌شود.` +
+    exclNote +
     liveFallbackNote;
 
   return { ok: true, nextState, text };
@@ -418,7 +444,11 @@ async function runInstantAiAutoTradeForTelegram(params: {
     cfg?.trading_mode === 'PAPER' ? 'paper' : undefined
   );
 
-  // Also ensure auto-trading stays enabled on the coordinator
+  // Enforce single-engine mutual exclusion and keep auto-trading enabled on the coordinator
+  await activateExclusiveTradingEngine(env.DB, user.id, 'CENTRAL_AI', {
+    strategyKey: 'ai_autonomous_agent',
+    auditSource: 'telegram_instant_ai',
+  });
   const nextState = cfg?.trading_mode === 'LIVE' && provider !== 'paper' ? 'RUNNING_LIVE' : 'RUNNING_PAPER';
   await env.DB.prepare(
     `UPDATE bot_configs SET strategy_key = 'ai_autonomous_agent', trade_execution_mode = 'AUTO', auto_scan_top = 1, scan_scope = 'ALL_MARKET', bot_state = ?, updated_at = datetime('now') WHERE user_id = ?`
@@ -1174,6 +1204,30 @@ export async function handleTelegramUpdate(env: Env, botToken: string, update: T
   const bot = new TelegramBotClient(botToken);
   const webAppUrl = (env.PUBLIC_WEB_URL || 'https://dollarino.pages.dev').replace(/\/$/, '');
 
+  // 0. Auto-detect when @Dollarino_bot is promoted to Admin in any Channel (e.g. private Signal / Results channels)
+  if (update.my_chat_member) {
+    const mcm = update.my_chat_member;
+    const status = mcm.new_chat_member?.status;
+    if (mcm.chat.type === 'channel' && (status === 'administrator' || status === 'creator')) {
+      const chId = String(mcm.chat.id);
+      const chTitle = mcm.chat.title || mcm.chat.username || chId;
+      await notifyAllAdmins(
+        env,
+        `📡 ربات در کانال **«${chTitle}»** ادمین شد!\n` +
+          `🆔 شناسه عددی کانال: \`${chId}\`\n\n` +
+          `این کانال را برای کدام بخش ثبت کنم؟`,
+        {
+          inlineKeyboard: [
+            [{ text: '📡 ثبت به‌عنوان کانال سیگنال‌ها', callback_data: `adm_bind_ch:signals:${chId}`, style: 'success' }],
+            [{ text: '🏆 ثبت به‌عنوان کانال نتیجه سیگنال‌ها', callback_data: `adm_bind_ch:results:${chId}`, style: 'primary' }],
+            [{ text: '📢 ثبت به‌عنوان کانال اصلی دلارینو', callback_data: `adm_bind_ch:official:${chId}` }],
+          ],
+        }
+      ).catch(() => {});
+    }
+    return { ok: true, event: 'my_chat_member' };
+  }
+
   // 1. Handle Channel Posts containing Dollarino Signals (Official origin validation, no forwards)
   if (update.channel_post?.text) {
     const post = update.channel_post;
@@ -1183,8 +1237,10 @@ export async function handleTelegramUpdate(env: Env, botToken: string, update: T
     const chatIdStr = String(post.chat.id);
     const chatUser = (post.chat.username || '').toLowerCase();
     const defaultHandle = (env.DEFAULT_SIGNAL_CHANNEL || '@Dollarino_official').replace(/^@/, '').toLowerCase();
+    const configuredSignalsChannel = await getSystemSetting(env.DB, 'signals_channel_id', '');
     const isOfficial =
       chatIdStr === '-1002263982097' ||
+      (configuredSignalsChannel && chatIdStr === configuredSignalsChannel) ||
       chatUser === 'dollarino_official' ||
       chatUser === 'dollarinoofficial' ||
       chatUser === defaultHandle;
@@ -1291,6 +1347,45 @@ export async function handleTelegramUpdate(env: Env, botToken: string, update: T
     if (await isPhoneKycRequiredForUser(env, user, tgId)) {
       await bot.answerCallbackQuery(cq.id, '🔐 ابتدا شماره تماس اکانت خود را از دکمه پایین به اشتراک بگذارید.', true);
       await sendPreAuthIntro(env, bot, chatId, user, cq.from.first_name || user.username);
+      return { ok: true };
+    }
+
+    if (data.startsWith('adm_bind_ch:')) {
+      if (!admin) {
+        await bot.answerCallbackQuery(cq.id, '⛔️ دسترسی مدیریتی ندارید.', true);
+        return { ok: true };
+      }
+      const parts = data.split(':');
+      const roleKey = parts[1];
+      const targetChatId = parts.slice(2).join(':');
+      const settingKey =
+        roleKey === 'signals'
+          ? 'signals_channel_id'
+          : roleKey === 'results'
+            ? 'results_channel_id'
+            : 'official_channel';
+      const roleTitle =
+        roleKey === 'signals'
+          ? '📡 کانال سیگنال‌ها'
+          : roleKey === 'results'
+            ? '🏆 کانال نتیجه سیگنال‌ها'
+            : '📢 کانال اصلی دلارینو';
+
+      await env.DB.prepare(
+        `INSERT INTO system_settings (key, value, updated_at) VALUES (?, ?, datetime('now'))
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = datetime('now')`
+      ).bind(settingKey, targetChatId).run();
+
+      const readiness = await bot.checkChannelAdminReadiness(targetChatId);
+      await bot.answerCallbackQuery(cq.id, `${roleTitle} ثبت شد ✅`);
+      const confirmTxt = readiness.ok
+        ? `✅ **${roleTitle}** با موفقیت روی «${readiness.channelTitle || targetChatId}» (\`${targetChatId}\`) ثبت و تایید شد!\nاز این لحظه پیام‌های مربوط به این بخش خودکار در این کانال منتشر می‌شوند.`
+        : `⚠️ **${roleTitle}** روی \`${targetChatId}\` ذخیره شد، اما دسترسی ارسال پیام ربات تایید نشد:\n${readiness.error || ''}\n\nلطفاً ربات را در کانال ادمین با دسترسی ارسال پیام کنید.`;
+      if (msgId) {
+        await bot.editMessageText(chatId, msgId, confirmTxt).catch(() => bot.sendMessage(chatId, confirmTxt));
+      } else {
+        await bot.sendMessage(chatId, confirmTxt);
+      }
       return { ok: true };
     }
 
@@ -1739,6 +1834,18 @@ export async function handleTelegramUpdate(env: Env, botToken: string, update: T
       const cfg = await env.DB.prepare('SELECT trading_mode FROM bot_configs WHERE user_id = ?').bind(user.id).first<{ trading_mode: string }>();
       const nextTradingMode = modeChoice === 'paper' ? 'PAPER' : (cfg?.trading_mode === 'LIVE' ? 'LIVE' : 'PAPER');
       const nextBotState = nextTradingMode === 'LIVE' ? 'RUNNING_LIVE' : 'RUNNING_PAPER';
+      const wizChoice: TradingEngineChoice =
+        stratKey === 'ai_autonomous_agent'
+          ? 'CENTRAL_AI'
+          : stratKey === 'my_custom_ai'
+            ? 'MY_AI'
+            : stratKey === 'copy_trade'
+              ? 'COPY_TRADE'
+              : 'STRATEGY';
+      await activateExclusiveTradingEngine(env.DB, user.id, wizChoice, {
+        strategyKey: stratKey,
+        auditSource: 'telegram_wizard',
+      });
 
       await env.DB.prepare(
         `UPDATE bot_configs
@@ -1893,7 +2000,9 @@ export async function handleTelegramUpdate(env: Env, botToken: string, update: T
         await showSubscriptionMenu(env, bot, chatId, user, tgId);
         return { ok: true };
       }
-      await env.DB.prepare(`UPDATE user_ai_agents SET is_active_for_trading = 1 WHERE user_id = ?`).bind(user.id).run();
+      await activateExclusiveTradingEngine(env.DB, user.id, 'MY_AI', {
+        auditSource: 'telegram_myai_activate',
+      });
       const cfg = await env.DB.prepare('SELECT trading_mode FROM bot_configs WHERE user_id = ?').bind(user.id).first<{ trading_mode: string }>();
       const nextState = cfg?.trading_mode === 'LIVE' ? 'RUNNING_LIVE' : 'RUNNING_PAPER';
       await env.DB.prepare(`UPDATE bot_configs SET strategy_key = 'my_custom_ai', bot_state = ?, updated_at = datetime('now') WHERE user_id = ?`)
@@ -1942,12 +2051,32 @@ export async function handleTelegramUpdate(env: Env, botToken: string, update: T
         return { ok: true };
       }
       const trader = await env.DB.prepare(`SELECT display_name FROM copy_traders WHERE id = ?`).bind(traderId).first<{ display_name: string }>();
-      await env.DB.prepare(
-        `INSERT OR IGNORE INTO copy_subscriptions (id, user_id, trader_id, allocation_usd, risk_multiplier, auto_mirror, is_active) VALUES (?, ?, ?, 100, 1, 1, 1)`
-      ).bind(randomId('csub'), user.id, traderId).run();
-      await env.DB.prepare(`UPDATE copy_subscriptions SET is_active = 1 WHERE user_id = ? AND trader_id = ?`).bind(user.id, traderId).run();
+      const excl = await activateExclusiveTradingEngine(env.DB, user.id, 'COPY_TRADE', {
+        auditSource: 'telegram_copy_follow',
+      });
+      const existingSub = await env.DB.prepare(
+        `SELECT id, is_active FROM copy_subscriptions WHERE user_id = ? AND trader_id = ? LIMIT 1`
+      ).bind(user.id, traderId).first<{ id: string; is_active: number }>();
+      if (existingSub) {
+        await env.DB.prepare(`UPDATE copy_subscriptions SET is_active = 1, updated_at = datetime('now') WHERE id = ?`).bind(existingSub.id).run();
+        if (!existingSub.is_active) {
+          await env.DB.prepare(`UPDATE copy_traders SET followers_count = followers_count + 1 WHERE id = ?`).bind(traderId).run();
+        }
+      } else {
+        await env.DB.prepare(
+          `INSERT INTO copy_subscriptions (id, user_id, trader_id, allocation_usd, risk_multiplier, auto_mirror, is_active) VALUES (?, ?, ?, 100, 1, 1, 1)`
+        ).bind(randomId('csub'), user.id, traderId).run();
+        await env.DB.prepare(`UPDATE copy_traders SET followers_count = followers_count + 1 WHERE id = ?`).bind(traderId).run();
+      }
       await bot.answerCallbackQuery(cq.id, `کپی‌ترید ${trader?.display_name || ''} فعال شد ✅`);
-      await bot.sendMessage(chatId, `✅ کپی‌ترید خودکار برای «${trader?.display_name || traderId}» فعال شد! از مینی‌اپ نیز می‌توانید معاملات لحظه‌ای ایشان را ببینید و مدیریت کنید.`);
+      await bot.sendMessage(
+        chatId,
+        `✅ کپی‌ترید خودکار برای «${trader?.display_name || traderId}» فعال شد!` +
+          (excl.stoppedBot || excl.disabledMyAi
+            ? '\n\n🔒 توجه: برای اجرای تک‌موتوره، ربات AI / استراتژی قبلی شما به‌صورت خودکار متوقف شد تا تداخلی ایجاد نشود.'
+            : '') +
+          ' از مینی‌اپ نیز می‌توانید معاملات لحظه‌ای ایشان را ببینید و مدیریت کنید.'
+      );
       return { ok: true };
     }
 
@@ -2644,7 +2773,13 @@ export async function handleTelegramUpdate(env: Env, botToken: string, update: T
   const msgBodyText = (msg?.text ?? msg?.caption ?? '').trim();
   const docImgFileId = msg?.document?.mime_type?.startsWith('image/') ? msg.document.file_id : undefined;
   const incomingImageFileId = msg?.photo?.[msg.photo.length - 1]?.file_id || docImgFileId;
-  if (!msg?.from || (!msgBodyText && !incomingImageFileId && !msg.contact)) return { ok: true };
+  const forwardedChannel =
+    msg?.forward_origin?.chat?.type === 'channel'
+      ? msg.forward_origin.chat
+      : msg?.forward_from_chat?.type === 'channel'
+        ? msg.forward_from_chat
+        : undefined;
+  if (!msg?.from || (!msgBodyText && !incomingImageFileId && !msg.contact && !forwardedChannel)) return { ok: true };
 
   const text = msgBodyText;
   const chatId = msg.chat.id;
@@ -2653,6 +2788,23 @@ export async function handleTelegramUpdate(env: Env, botToken: string, update: T
   const superAdmin = isSuperAdminUser(tgId, user.role, env);
   const admin = isUserAdmin(tgId, user.role, env);
   const uiMode = getUserUiMode(user);
+
+  if (admin && forwardedChannel) {
+    const fChId = String(forwardedChannel.id);
+    const fTitle = forwardedChannel.title || forwardedChannel.username || fChId;
+    await bot.sendMessage(
+      chatId,
+      `📡 کانال **«${fTitle}»** با شناسه \`${fChId}\` شناسایی شد!\nلطفاً مشخص کنید این کانال برای کدام بخش استفاده شود:`,
+      {
+        inlineKeyboard: [
+          [{ text: '📡 ثبت به‌عنوان کانال سیگنال‌ها', callback_data: `adm_bind_ch:signals:${fChId}`, style: 'success' }],
+          [{ text: '🏆 ثبت به‌عنوان کانال نتیجه سیگنال‌ها', callback_data: `adm_bind_ch:results:${fChId}`, style: 'primary' }],
+          [{ text: '📢 ثبت به‌عنوان کانال اصلی دلارینو', callback_data: `adm_bind_ch:official:${fChId}` }],
+        ],
+      }
+    );
+    return { ok: true };
+  }
 
   if (user.is_blocked) {
     await bot.sendMessage(chatId, '⛔️ دسترسی حساب شما موقتاً توسط مدیر محدود شده است.');

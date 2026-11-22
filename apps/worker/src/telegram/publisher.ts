@@ -14,6 +14,8 @@ import {
   copyTradePublishConfirmButtons,
   formatTradeClosedCard,
   OFFICIAL_CHANNEL_HANDLE,
+  RESULTS_CHANNEL_INVITE,
+  SIGNALS_CHANNEL_INVITE,
 } from './formatter.js';
 
 export async function getSystemSettingValue(db: D1Database, key: string, fallback: string): Promise<string> {
@@ -26,17 +28,33 @@ export async function getSystemSettingValue(db: D1Database, key: string, fallbac
 
 export async function resolveChannelAndBotConfig(env: Env): Promise<{
   channelHandle: string;
+  signalsChannelId: string;
+  signalsChannelInvite: string;
+  resultsChannelId: string;
+  resultsChannelInvite: string;
   botUsername: string;
   webAppUrl: string;
 }> {
-  const [channelRaw, botUserRaw, webUrlRaw] = await Promise.all([
+  const [channelRaw, sigChanRaw, sigInviteRaw, resChanRaw, resInviteRaw, botUserRaw, webUrlRaw] = await Promise.all([
     getSystemSettingValue(env.DB, 'official_channel', env.DEFAULT_SIGNAL_CHANNEL || OFFICIAL_CHANNEL_HANDLE),
+    getSystemSettingValue(env.DB, 'signals_channel_id', ''),
+    getSystemSettingValue(env.DB, 'signals_channel_invite', SIGNALS_CHANNEL_INVITE),
+    getSystemSettingValue(env.DB, 'results_channel_id', ''),
+    getSystemSettingValue(env.DB, 'results_channel_invite', RESULTS_CHANNEL_INVITE),
     getSystemSettingValue(env.DB, 'bot_username', 'Dollarino_bot'),
     getSystemSettingValue(env.DB, 'public_web_url', env.PUBLIC_WEB_URL || 'https://dollarino.pages.dev'),
   ]);
-  const channelHandle = channelRaw.startsWith('@') || channelRaw.startsWith('-100') ? channelRaw : `@${channelRaw}`;
+  const norm = (val: string) => {
+    const t = val.trim();
+    if (!t) return '';
+    return t.startsWith('@') || t.startsWith('-100') || /^-?\d+$/.test(t) ? t : `@${t}`;
+  };
   return {
-    channelHandle,
+    channelHandle: norm(channelRaw) || OFFICIAL_CHANNEL_HANDLE,
+    signalsChannelId: norm(sigChanRaw),
+    signalsChannelInvite: sigInviteRaw.trim() || SIGNALS_CHANNEL_INVITE,
+    resultsChannelId: norm(resChanRaw),
+    resultsChannelInvite: resInviteRaw.trim() || RESULTS_CHANNEL_INVITE,
     botUsername: botUserRaw.replace(/^@/, '') || 'Dollarino_bot',
     webAppUrl: webUrlRaw.replace(/\/$/, ''),
   };
@@ -170,27 +188,41 @@ export async function publishSignalBroadcast(
 
   const tg = new TelegramBotClient(env.TELEGRAM_BOT_TOKEN);
   const autoPublish = (await getSystemSettingValue(env.DB, 'auto_publish_signals_to_channel', 'true')) === 'true';
+  const alsoOfficial = (await getSystemSettingValue(env.DB, 'signals_also_official', 'true')) === 'true';
 
-  if ((params.publishToChannel ?? autoPublish) && cfg.channelHandle) {
-    try {
-      const sent = await tg.sendMessage(cfg.channelHandle, formattedText, {
-        inlineKeyboard: channelSignalInlineButtons({
-          signalId,
-          botUsername: cfg.botUsername,
-          webAppUrl: cfg.webAppUrl,
-          forChannel: true,
-        }),
-      });
-      channelMessageId = sent.message_id;
-      await env.DB.prepare(
-        `UPDATE signals SET channel_message_id = ?, channel_chat_id = ?, engine_label = ?, engine_source = ? WHERE id = ?`
-      ).bind(channelMessageId, cfg.channelHandle, engineLabel, params.engineKey || params.source, signalId).run().catch(() => {});
-    } catch (err) {
-      channelError = err instanceof Error ? err.message : String(err);
-      await notifyAllAdmins(
-        env,
-        `⚠️ خطای ارسال سیگنال ${fullSignal.symbol} به کانال ${cfg.channelHandle}:\n${channelError}\n\nلطفاً مطمئن شوید @${cfg.botUsername} با دسترسی ارسال پیام در کانال ادمین است.`
-      ).catch(() => {});
+  if (params.publishToChannel ?? autoPublish) {
+    const primaryTarget = cfg.signalsChannelId || cfg.channelHandle;
+    const targets = new Set<string>();
+    if (primaryTarget) targets.add(primaryTarget);
+    if (alsoOfficial && cfg.channelHandle) targets.add(cfg.channelHandle);
+
+    const chanMarkup = channelSignalInlineButtons({
+      signalId,
+      botUsername: cfg.botUsername,
+      webAppUrl: cfg.webAppUrl,
+      forChannel: true,
+      resultsChannelInvite: cfg.resultsChannelInvite,
+    });
+
+    for (const targetChat of targets) {
+      try {
+        const sent = await tg.sendMessage(targetChat, formattedText, {
+          inlineKeyboard: chanMarkup,
+        });
+        if (!channelMessageId || targetChat === primaryTarget) {
+          channelMessageId = sent.message_id;
+          await env.DB.prepare(
+            `UPDATE signals SET channel_message_id = ?, channel_chat_id = ?, engine_label = ?, engine_source = ? WHERE id = ?`
+          ).bind(sent.message_id, targetChat, engineLabel, params.engineKey || params.source, signalId).run().catch(() => {});
+        }
+      } catch (err) {
+        const errMsg = err instanceof Error ? err.message : String(err);
+        if (!channelError) channelError = errMsg;
+        await notifyAllAdmins(
+          env,
+          `⚠️ خطای ارسال سیگنال ${fullSignal.symbol} به کانال ${targetChat}:\n${errMsg}\n\nلطفاً مطمئن شوید @${cfg.botUsername} با دسترسی ارسال پیام در کانال ادمین است.`
+        ).catch(() => {});
+      }
     }
   }
 
@@ -345,7 +377,45 @@ export async function publishSignalClosedCard(
     }
   }
 
-  // 2. If tied to a channel signal message in @Dollarino_official, reply directly to that signal with result card!
+  const channelMarkup: InlineKeyboardButton[][] = [
+    [
+      {
+        text: '📡 کانال سیگنال‌ها',
+        url: cfg.signalsChannelInvite,
+      },
+      {
+        text: '🤖 شروع با ربات',
+        url: `https://t.me/${cfg.botUsername}`,
+        style: 'success',
+      },
+    ],
+    [
+      {
+        text: '📊 تاییدیه و نتایج در سایت',
+        url: cfg.webAppUrl,
+        style: 'primary',
+      },
+    ],
+  ];
+
+  let sentToResultsChannel = false;
+  // 2A. Dedicated Results Channel (when configured by admin)
+  if (cfg.resultsChannelId) {
+    try {
+      if (pngBytes) {
+        await tg.sendPhotoBuffer(cfg.resultsChannelId, pngBytes, `dollarino-result-${params.symbol}.png`, caption, {
+          inlineKeyboard: channelMarkup,
+        });
+      } else {
+        await tg.sendMessage(cfg.resultsChannelId, caption, { inlineKeyboard: channelMarkup });
+      }
+      sentToResultsChannel = true;
+    } catch {
+      // ignore results channel post failure
+    }
+  }
+
+  // 2B. If tied to a channel signal message, reply directly to that signal with result card!
   if (params.signalId) {
     const sigRow = await env.DB.prepare(
       `SELECT channel_message_id, channel_chat_id FROM signals WHERE id = ? LIMIT 1`
@@ -353,40 +423,28 @@ export async function publishSignalClosedCard(
 
     if (sigRow?.channel_message_id) {
       const targetChannel = sigRow.channel_chat_id || cfg.channelHandle;
-      const channelMarkup: InlineKeyboardButton[][] = [
-        [
-          {
-            text: '🤖 شروع ترید با ربات دلارینو',
-            url: `https://t.me/${cfg.botUsername}`,
-            style: 'success',
-          },
-          {
-            text: '📊 تاییدیه و نتایج در سایت',
-            url: cfg.webAppUrl,
-            style: 'primary',
-          },
-        ],
-      ];
-      try {
-        if (pngBytes) {
-          await tg.sendPhotoBuffer(
-            targetChannel,
-            pngBytes,
-            `dollarino-signal-${params.symbol}.png`,
-            caption,
-            {
+      if (!sentToResultsChannel || targetChannel !== cfg.resultsChannelId) {
+        try {
+          if (pngBytes) {
+            await tg.sendPhotoBuffer(
+              targetChannel,
+              pngBytes,
+              `dollarino-signal-${params.symbol}.png`,
+              caption,
+              {
+                replyToMessageId: sigRow.channel_message_id,
+                inlineKeyboard: channelMarkup,
+              }
+            );
+          } else {
+            await tg.sendMessage(targetChannel, caption, {
               replyToMessageId: sigRow.channel_message_id,
               inlineKeyboard: channelMarkup,
-            }
-          );
-        } else {
-          await tg.sendMessage(targetChannel, caption, {
-            replyToMessageId: sigRow.channel_message_id,
-            inlineKeyboard: channelMarkup,
-          });
+            });
+          }
+        } catch {
+          // ignore channel reply failure
         }
-      } catch {
-        // ignore channel reply failure
       }
     }
   }
@@ -489,6 +547,8 @@ export async function publishChannelNews(
     webAppUrl: cfg.webAppUrl,
     customButtonLabel: params.buttonLabel,
     customButtonUrl: params.buttonUrl,
+    signalsChannelInvite: cfg.signalsChannelInvite,
+    resultsChannelInvite: cfg.resultsChannelInvite,
   });
 
   let channelMessageId: number | undefined;

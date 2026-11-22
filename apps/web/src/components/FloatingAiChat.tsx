@@ -628,7 +628,11 @@ export function DedicatedAiChatSurface({
         )}
 
         {/* Top Header + Model Selector */}
-        <div className="px-3.5 pt-2 sm:pt-3 pb-2.5 border-b hairline bg-[var(--panel)] shrink-0 space-y-2">
+        <div
+          className={`px-3.5 pt-2 sm:pt-3 pb-2.5 border-b hairline shrink-0 space-y-2 ${
+            compact ? 'bg-[var(--glass-a)] backdrop-blur-md' : 'bg-[var(--panel)]'
+          }`}
+        >
           {compact && (
             <div className="sm:hidden flex justify-center">
               <span className="w-10 h-1 rounded-full bg-[var(--line-strong)]" aria-hidden="true" />
@@ -849,7 +853,9 @@ export function DedicatedAiChatSurface({
             e.preventDefault();
             void sendMessage();
           }}
-          className="px-3 pt-2 pb-[max(0.75rem,env(safe-area-inset-bottom))] border-t hairline bg-[var(--panel)] space-y-2 shrink-0"
+          className={`px-3 pt-2 pb-[max(0.75rem,env(safe-area-inset-bottom))] border-t hairline space-y-2 shrink-0 ${
+            compact ? 'bg-[var(--glass-a)] backdrop-blur-md' : 'bg-[var(--panel)]'
+          }`}
         >
           {pendingImage && (
             <div className="flex items-center gap-3 p-2 rounded-2xl surface-soft border hairline">
@@ -990,7 +996,7 @@ export function DollarinoRobotLogoIcon({ size = 34 }: { size?: number }) {
 }
 
 const ORB_STORAGE_KEY = 'dollarino_ai_orb_pos_v2';
-const ORB_SIZE = 48;
+const ORB_SIZE = 60;
 
 interface OrbPos {
   side: 'left' | 'right';
@@ -1093,7 +1099,7 @@ export function FloatingAiChat({
       {open && (
         <>
           <div
-            className="sm:hidden fixed inset-0 z-[179] bg-black/45"
+            className="sm:hidden fixed inset-0 z-[179] bg-black/35 backdrop-blur-[3px]"
             onClick={() => {
               setOpen(false);
               setCollapsed(false);
@@ -1104,7 +1110,7 @@ export function FloatingAiChat({
             dir={isFa ? 'rtl' : 'ltr'}
             className={`fixed inset-x-0 bottom-0 h-[84dvh] rounded-t-[28px] sm:inset-x-auto sm:bottom-16 ${
               pos.side === 'left' ? 'sm:left-5' : 'sm:right-5'
-            } sm:w-[420px] sm:h-[560px] sm:max-h-[80vh] sm:rounded-[28px] z-[180] bg-[var(--panel)] border border-[var(--glass-border)] shadow-2xl overflow-hidden flex flex-col pop-in`}
+            } sm:w-[420px] sm:h-[560px] sm:max-h-[80vh] sm:rounded-[28px] z-[180] liquid-ai-sheet overflow-hidden flex flex-col pop-in`}
           >
             <DedicatedAiChatSurface
               lang={lang}
@@ -1202,22 +1208,19 @@ export function FloatingAiChat({
             width: `${ORB_SIZE}px`,
             height: `${ORB_SIZE}px`,
             transform: `translate3d(${collapsedShiftX}px, 0, 0)`,
-            background: 'rgba(13, 24, 54, 0.78)',
-            backdropFilter: 'blur(10px)',
-            WebkitBackdropFilter: 'blur(10px)',
-            border: '1px solid rgba(56, 189, 248, 0.42)',
-            boxShadow: '0 4px 14px rgba(0, 0, 0, 0.28)',
-            opacity: dragging ? 0.98 : collapsed ? 0.58 : 0.92,
+            opacity: dragging ? 0.98 : collapsed ? 0.68 : 0.96,
             transition: dragging
               ? 'none'
-              : 'left 0.28s cubic-bezier(0.22, 1, 0.36, 1), top 0.22s ease, transform 0.28s cubic-bezier(0.22, 1, 0.36, 1), opacity 0.25s ease',
+              : 'left 0.28s cubic-bezier(0.22, 1, 0.36, 1), top 0.22s ease, transform 0.28s cubic-bezier(0.22, 1, 0.36, 1), opacity 0.25s ease, box-shadow 0.25s ease',
             touchAction: 'none',
           }}
-          className="fixed z-[175] rounded-full grid place-items-center cursor-pointer select-none hover:!opacity-100 focus:outline-none"
+          className="liquid-orb fixed z-[175] rounded-full grid place-items-center cursor-pointer select-none hover:!opacity-100 focus:outline-none"
         >
-          <DollarinoRobotLogoIcon size={34} />
+          <div className="liquid-orb-core relative z-10 drop-shadow-[0_2px_8px_rgba(22,82,240,0.34)]">
+            <DollarinoRobotLogoIcon size={32} />
+          </div>
           <span
-            className="absolute top-1 end-1 w-2 h-2 rounded-full bg-emerald-400 border border-slate-900 pointer-events-none"
+            className="absolute top-1.5 end-1.5 z-20 w-2.5 h-2.5 rounded-full bg-emerald-400 ring-2 ring-white/80 dark:ring-[var(--panel)] shadow-[0_0_10px_rgba(16,185,129,0.75)] pointer-events-none"
             aria-hidden="true"
           />
         </button>

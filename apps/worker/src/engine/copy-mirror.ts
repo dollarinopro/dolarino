@@ -114,6 +114,22 @@ export async function confirmAndMirrorCopyTrade(
 
   for (const f of followers.results) {
     try {
+      // Mutual exclusion safety check: do not mirror if user has another autonomous engine running
+      const followerBot = await env.DB.prepare(
+        `SELECT bot_state, strategy_key FROM bot_configs WHERE user_id = ? LIMIT 1`
+      )
+        .bind(f.user_id)
+        .first<{ bot_state: string; strategy_key: string }>()
+        .catch(() => null);
+      if (
+        followerBot &&
+        (followerBot.bot_state === 'RUNNING_PAPER' || followerBot.bot_state === 'RUNNING_LIVE') &&
+        followerBot.strategy_key !== 'copy_trade'
+      ) {
+        skippedCount++;
+        continue;
+      }
+
       const ent = await resolveUserEntitlement(env.DB, {
         id: f.user_id,
         email: f.email,

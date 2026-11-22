@@ -1,7 +1,10 @@
 import {
+  computeKbosV11Detailed,
   computeStrategySignals,
   DEFAULT_MIXER_WEIGHTS,
+  ema,
   evaluateCustomStrategy,
+  evaluateSignalMixerAtBar,
   mergeKbosParams,
   resolveEngineDisplayLabel,
   selectClosedCandles,
@@ -55,35 +58,50 @@ export class TradingBotCoordinator implements DurableObject {
   private async scheduleAlarm() {
     const current = await this.state.storage.getAlarm();
     if (!current || current < Date.now()) {
-      await this.state.storage.setAlarm(Date.now() + 15_000);
+      await this.state.storage.setAlarm(Date.now() + 60_000);
     }
   }
 
   async alarm() {
-    const runningUsers = await this.env.DB.prepare(
-      `SELECT user_id FROM bot_configs WHERE bot_state IN ('RUNNING_PAPER', 'RUNNING_LIVE')`
-    ).all<{ user_id: string }>();
-
-    const openUsers = await this.env.DB.prepare(
-      `SELECT DISTINCT user_id FROM trades WHERE status = 'OPEN'`
-    ).all<{ user_id: string }>();
-
-    const alertUsers = await this.env.DB.prepare(
-      `SELECT DISTINCT user_id FROM price_alerts WHERE is_active = 1`
-    ).all<{ user_id: string }>().catch(() => ({ results: [] as Array<{ user_id: string }> }));
-
-    const allUserIds = new Set([
-      ...runningUsers.results.map((r) => r.user_id),
-      ...openUsers.results.map((r) => r.user_id),
-      ...alertUsers.results.map((r) => r.user_id),
+    const [runningUsers, openUsers, alertUsers] = await Promise.all([
+      this.env.DB.prepare(
+        `SELECT user_id FROM bot_configs WHERE bot_state IN ('RUNNING_PAPER', 'RUNNING_LIVE') LIMIT 200`
+      ).all<{ user_id: string }>(),
+      this.env.DB.prepare(
+        `SELECT DISTINCT user_id FROM trades WHERE status = 'OPEN' LIMIT 200`
+      ).all<{ user_id: string }>(),
+      this.env.DB.prepare(
+        `SELECT DISTINCT user_id FROM price_alerts WHERE is_active = 1 LIMIT 200`
+      ).all<{ user_id: string }>().catch(() => ({ results: [] as Array<{ user_id: string }> })),
     ]);
 
+    const runningSet = new Set(runningUsers.results.map((r) => r.user_id));
+    const openSet = new Set(openUsers.results.map((r) => r.user_id));
+    const alertSet = new Set(alertUsers.results.map((r) => r.user_id));
+    const allUserIds = new Set([...runningSet, ...openSet, ...alertSet]);
+
     for (const userId of allUserIds) {
-      await this.runUserTick(userId).catch(() => {});
+      await this.runUserTick(userId, {
+        isBotRunning: runningSet.has(userId),
+        hasOpenTrades: openSet.has(userId),
+        hasAlerts: alertSet.has(userId),
+      }).catch(() => {});
+    }
+
+    // Prune stale audit logs once every 6 hours to keep D1 compact & fast
+    const now = Date.now();
+    const lastPrune = (await this.state.storage.get<number>('last_audit_prune_ms')) ?? 0;
+    if (now - lastPrune > 6 * 3600_000) {
+      await this.state.storage.put('last_audit_prune_ms', now);
+      await this.env.DB.prepare(
+        `DELETE FROM audit_logs WHERE id IN (SELECT id FROM audit_logs WHERE created_at < datetime('now', '-7 days') LIMIT 500)`
+      ).run().catch(() => {});
     }
 
     if (allUserIds.size > 0) {
-      await this.state.storage.setAlarm(Date.now() + 15_000);
+      // Check every 30s when open trades exist for tight TP/SL control; otherwise every 60s to preserve D1 quota
+      const nextDelay = openSet.size > 0 ? 30_000 : 60_000;
+      await this.state.storage.setAlarm(Date.now() + nextDelay);
     }
   }
 
@@ -196,20 +214,45 @@ export class TradingBotCoordinator implements DurableObject {
     return Array.from(new Set(picked));
   }
 
-  private async runUserTick(userId: string) {
-    // 1. Always manage open positions (3-TP + Risk-Free trailing)
-    await reconcileOpenPositionsForUser(this.env, userId);
-
-    // 1B. Check live price alerts even when auto-trading bot is stopped
-    const { adapter: alertAdapter } = await resolveUserExchangeAdapter(this.env, userId, 'paper').catch(() => ({ adapter: null }));
-    if (alertAdapter) {
-      await this.checkUserPriceAlerts(userId, alertAdapter).catch(() => {});
+  private async runUserTick(
+    userId: string,
+    hints?: { isBotRunning?: boolean; hasOpenTrades?: boolean; hasAlerts?: boolean }
+  ) {
+    // 1. Only query & reconcile open positions if user actually has open trades (or manual /tick trigger)
+    if (!hints || hints.hasOpenTrades) {
+      await reconcileOpenPositionsForUser(this.env, userId);
     }
 
-    // 2. Check if bot is actively scanning strategies or Dollarino AI
+    // 1B. Only check price alerts when user actually has active alerts (or manual /tick trigger)
+    if (!hints || hints.hasAlerts) {
+      const { adapter: alertAdapter } = await resolveUserExchangeAdapter(this.env, userId, 'paper').catch(() => ({ adapter: null }));
+      if (alertAdapter) {
+        await this.checkUserPriceAlerts(userId, alertAdapter).catch(() => {});
+      }
+    }
+
+    // 2. Skip autonomous strategy scan immediately when bot is known stopped
+    if (hints && !hints.isBotRunning) {
+      return;
+    }
+
     const cfg = await this.env.DB.prepare('SELECT * FROM bot_configs WHERE user_id = ?')
       .bind(userId).first<UserBotConfigRow>();
     if (!cfg || (cfg.bot_state !== 'RUNNING_PAPER' && cfg.bot_state !== 'RUNNING_LIVE')) {
+      return;
+    }
+
+    // Strict Single-Engine Mutual Exclusion: if Copy Trade is active, autonomous strategies/AI do not trade
+    if (cfg.strategy_key === 'copy_trade') {
+      return;
+    }
+    const activeCopyRow = await this.env.DB.prepare(
+      `SELECT COUNT(*) as cnt FROM copy_subscriptions WHERE user_id = ? AND is_active = 1`
+    )
+      .bind(userId)
+      .first<{ cnt: number }>()
+      .catch(() => ({ cnt: 0 }));
+    if ((activeCopyRow?.cnt ?? 0) > 0) {
       return;
     }
 
@@ -460,20 +503,64 @@ export class TradingBotCoordinator implements DurableObject {
       }
     } catch { /* fallback */ }
 
-    // 2A. Dollarino AI (Centralized Multi-AI Consensus Trader + Quant-AI Fallback)
+    // 2A. Dollarino AI (Token-Guarded Quant Pre-Filter + Single-Model Consensus + Quant Fallback)
     if (cfg.strategy_key === 'ai_autonomous_agent') {
       const latestBarTs = ltfClosed[ltfClosed.length - 1]!.timestamp;
       const aiBarKey = `last_ai_bar_ts_${userId}_${scanSymbol}_${cfg.entry_timeframe}`;
       const aiCheckKey = `last_ai_check_ms_${userId}_${scanSymbol}_${cfg.entry_timeframe}`;
-      const [lastAiTs, lastCheckMs] = await Promise.all([
+      const userAiThrottleKey = `user_ai_throttle_ms_${userId}`;
+      const [lastAiTs, lastCheckMs, lastUserAiMs] = await Promise.all([
         this.state.storage.get<number>(aiBarKey),
         this.state.storage.get<number>(aiCheckKey),
+        this.state.storage.get<number>(userAiThrottleKey),
       ]);
-      // Allow re-evaluation every 3 minutes even inside the same candle so AI stays responsive
-      if (lastAiTs === latestBarTs && lastCheckMs && now - lastCheckMs < 180_000) return false;
+      // Re-evaluate each symbol at most once every 15 minutes (or on new candle close)
+      if (lastAiTs === latestBarTs && lastCheckMs && now - lastCheckMs < 900_000) return false;
+
+      // Zero-Token Quant Pre-Filter: only consult external LLM when genuine confluence/momentum exists (or open position needs check)
+      let htfTrend: 'BULLISH' | 'BEARISH' | 'NEUTRAL' = 'NEUTRAL';
+      if (htfClosed.length >= 25) {
+        const hc = htfClosed.map((c) => c.close);
+        const h20 = ema(hc, 20);
+        const h50 = ema(hc, 50);
+        const f = h20[htfClosed.length - 1];
+        const s = h50[htfClosed.length - 1];
+        if (Number.isFinite(f) && Number.isFinite(s)) {
+          htfTrend = f! > s! ? 'BULLISH' : f! < s! ? 'BEARISH' : 'NEUTRAL';
+        }
+      }
+      const preMixer = evaluateSignalMixerAtBar(
+        ltfClosed,
+        ltfClosed.length - 1,
+        htfTrend,
+        mixerWeights,
+        cfg.mixer_threshold ?? 65
+      );
+      const preKbos = computeKbosV11Detailed(ltfClosed, cfg.entry_timeframe, kbosParams);
+      const preKbosSig = preKbos.outputs[preKbos.outputs.length - 1]?.signal ?? 'NONE';
+      const hasStrongQuantCandidate =
+        Boolean(openAny) ||
+        preKbosSig !== 'NONE' ||
+        Math.abs(preMixer.compositeScore || 0) >= 26 ||
+        preMixer.direction !== 'NONE';
+
+      if (!hasStrongQuantCandidate) {
+        await Promise.all([
+          this.state.storage.put(aiBarKey, latestBarTs),
+          this.state.storage.put(aiCheckKey, now),
+        ]);
+        return false;
+      }
+
+      // Per-user API token guard: at most 1 fresh LLM scan per 2 minutes when scanning multiple coins
+      if (!openAny && lastUserAiMs && now - lastUserAiMs < 120_000) {
+        return false;
+      }
+
       await Promise.all([
         this.state.storage.put(aiBarKey, latestBarTs),
         this.state.storage.put(aiCheckKey, now),
+        this.state.storage.put(userAiThrottleKey, now),
       ]);
 
       const [orderBook, market24h] = await Promise.all([

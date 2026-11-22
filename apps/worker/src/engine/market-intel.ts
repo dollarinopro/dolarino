@@ -1,10 +1,12 @@
 import {
   computeStrategySignals,
   ema,
+  evaluateSignalMixerAtBar,
   resolveEngineDisplayLabel,
   rsi,
   selectClosedCandles,
   strategyOutputToDollarinoSignal,
+  type Candle,
   type DollarinoSignal,
 } from '@dollarino/core';
 import { callBYOAI, resolveAIEnsemble, runAutonomousAITrader } from '../ai/providers.js';
@@ -50,12 +52,31 @@ async function setSetting(db: D1Database, key: string, value: string): Promise<v
     .catch(() => {});
 }
 
-async function minutesSinceSetting(db: D1Database, key: string): Promise<number> {
-  const val = await getSystemSettingValue(db, key, '');
+async function getSettingsMap(db: D1Database, keys: string[]): Promise<Record<string, string>> {
+  if (!keys.length) return {};
+  const placeholders = keys.map(() => '?').join(', ');
+  const rows = await db
+    .prepare(`SELECT key, value FROM system_settings WHERE key IN (${placeholders})`)
+    .bind(...keys)
+    .all<{ key: string; value: string }>()
+    .catch(() => ({ results: [] as Array<{ key: string; value: string }> }));
+  const map: Record<string, string> = {};
+  for (const r of rows.results ?? []) {
+    map[r.key] = r.value;
+  }
+  return map;
+}
+
+function minsFromIso(val?: string): number {
   if (!val) return Infinity;
   const ts = Date.parse(val);
   if (!Number.isFinite(ts)) return Infinity;
   return (Date.now() - ts) / 60_000;
+}
+
+async function minutesSinceSetting(db: D1Database, key: string): Promise<number> {
+  const val = await getSystemSettingValue(db, key, '');
+  return minsFromIso(val);
 }
 
 function roundSignalPrice(val: number, ref: number): string {
@@ -84,18 +105,24 @@ export async function runAlwaysOnSignalRadar(
   subscribersNotified?: number;
   reason?: string;
 }> {
-  const enabled = (await getSystemSettingValue(env.DB, 'always_on_signals_enabled', 'true')) === 'true';
+  const settings = await getSettingsMap(env.DB, [
+    'always_on_signals_enabled',
+    'intel_last_scan_at',
+    'intel_last_signal_at',
+  ]);
+  const enabled = (settings['always_on_signals_enabled'] ?? 'true') === 'true';
   if (!enabled && !opts?.force) {
     return { scanned: 0, published: false, reason: 'disabled' };
   }
 
   if (!opts?.force) {
-    const minsSinceScan = await minutesSinceSetting(env.DB, 'intel_last_scan_at');
-    if (minsSinceScan < 4) {
+    const minsSinceScan = minsFromIso(settings['intel_last_scan_at']);
+    if (minsSinceScan < 15) {
       return { scanned: 0, published: false, reason: 'scan_cooldown' };
     }
-    const minsSincePub = await minutesSinceSetting(env.DB, 'intel_last_signal_at');
-    if (minsSincePub < 20) {
+    const minsSincePub = minsFromIso(settings['intel_last_signal_at']);
+    if (minsSincePub < 45) {
+      await setSetting(env.DB, 'intel_last_scan_at', new Date().toISOString());
       return { scanned: 0, published: false, reason: 'publish_cooldown' };
     }
   }
@@ -112,23 +139,66 @@ export async function runAlwaysOnSignalRadar(
   }
   await setSetting(env.DB, 'intel_scan_cursor', String((cursor + 6) % WATCH_COINS.length));
 
+  const computeSignalRR = (entryStr: string, slStr: string, tp1Str?: string, tp2Str?: string): number => {
+    const entry = Number(entryStr);
+    const sl = Number(slStr);
+    const tp = Number(tp2Str || tp1Str || 0);
+    const risk = Math.abs(entry - sl);
+    if (!Number.isFinite(entry) || !Number.isFinite(sl) || !Number.isFinite(tp) || risk <= 0) return 0;
+    return Math.abs(tp - entry) / risk;
+  };
+
+  const evaluateHtfQuality = (
+    closed15: Candle[],
+    closed1h: Candle[],
+    dir: 'LONG' | 'SHORT'
+  ): boolean => {
+    const c15 = closed15.map((c) => c.close);
+    const rArr = c15.length >= 20 ? rsi(c15, 14) : [];
+    const r14 = rArr[rArr.length - 1] ?? 50;
+    if (dir === 'LONG' && (r14 > 67 || r14 < 36)) return false;
+    if (dir === 'SHORT' && (r14 < 33 || r14 > 64)) return false;
+
+    if (closed1h.length >= 55) {
+      const c1h = closed1h.map((c) => c.close);
+      const e20 = ema(c1h, 20);
+      const e50 = ema(c1h, 50);
+      const f = e20[e20.length - 1] ?? 0;
+      const s = e50[e50.length - 1] ?? 0;
+      if (f > 0 && s > 0) {
+        if (dir === 'LONG' && f < s * 0.998) return false;
+        if (dir === 'SHORT' && f > s * 1.002) return false;
+      }
+    }
+    return true;
+  };
+
   let chosenSignal: DollarinoSignal | null = null;
   let chosenEngineKey = 'dollarino_v01';
-  let bestCandidate: { symbol: string; candles1h: Awaited<ReturnType<typeof fetchPublicKlines>>; score: number } | null = null;
+  let bestCandidate: {
+    symbol: string;
+    candles15m: Candle[];
+    candles1h: Candle[];
+    score: number;
+  } | null = null;
 
   for (const sym of batch) {
     if (!opts?.force) {
       const symCooldown = await minutesSinceSetting(env.DB, `intel_sig_last_${sym}`);
-      if (symCooldown < 90) continue;
+      if (symCooldown < 180) continue;
     }
 
-    const raw15 = await fetchPublicKlines(sym, '15m', 120, proxyCfg).catch(() => []);
+    const [raw15, raw1h] = await Promise.all([
+      fetchPublicKlines(sym, '15m', 120, proxyCfg).catch(() => []),
+      fetchPublicKlines(sym, '1h', 120, proxyCfg).catch(() => []),
+    ]);
     const closed15 = selectClosedCandles(raw15, '15m');
+    const closed1h = selectClosedCandles(raw1h, '1h');
     if (closed15.length < 40) continue;
 
-    // 1) Try primary Dorna V1 & KBOS v11 non-repaint strategy
+    // 1) Zero-Token Mechanical Check (Dorna V1 & KBOS v11) with strict HTF + R:R >= 1.8 filter
     for (const skey of ['dollarino_v01', 'kbos_v11'] as const) {
-      const outputs = computeStrategySignals(skey, closed15, [], '15m', '1h', {});
+      const outputs = computeStrategySignals(skey, closed15, closed1h, '15m', '1h', {});
       const latest = outputs[outputs.length - 1];
       if (latest && latest.signal !== 'NONE' && Number.isFinite(latest.stopLoss)) {
         const sig = strategyOutputToDollarinoSignal(
@@ -140,29 +210,57 @@ export async function runAlwaysOnSignalRadar(
           skey
         );
         if (sig) {
-          chosenSignal = sig;
-          chosenEngineKey = skey;
-          break;
+          const rr = computeSignalRR(sig.price, sig.stopLoss, sig.tp1, sig.tp2);
+          const htfOk = opts?.force || evaluateHtfQuality(closed15, closed1h, sig.direction);
+          if (htfOk && (opts?.force || rr >= 1.8)) {
+            chosenSignal = sig;
+            chosenEngineKey = skey;
+            break;
+          }
         }
       }
     }
     if (chosenSignal) break;
 
-    // 2) Rank best momentum candidate for Central AI Trader fallback
+    // 2) Zero-Token Quant Confluence Screener before ever consulting external AI
+    let htfTrend: 'BULLISH' | 'BEARISH' | 'NEUTRAL' = 'NEUTRAL';
+    if (closed1h.length >= 55) {
+      const c1h = closed1h.map((c) => c.close);
+      const e20 = ema(c1h, 20);
+      const e50 = ema(c1h, 50);
+      const f = e20[e20.length - 1] ?? 0;
+      const s = e50[e50.length - 1] ?? 0;
+      if (f > 0 && s > 0) {
+        htfTrend = f > s * 1.001 ? 'BULLISH' : f < s * 0.999 ? 'BEARISH' : 'NEUTRAL';
+      }
+    }
+    const mixer = evaluateSignalMixerAtBar(closed15, closed15.length - 1, htfTrend);
+    const absScore = Math.abs(mixer.compositeScore || 0);
     const lastClose = closed15[closed15.length - 1]!.close;
     const prevClose = closed15[Math.max(0, closed15.length - 9)]!.close;
     const movePct = prevClose > 0 ? Math.abs((lastClose - prevClose) / prevClose) * 100 : 0;
-    if (!bestCandidate || movePct > bestCandidate.score) {
-      bestCandidate = { symbol: sym, candles1h: closed15, score: movePct };
+    const compositeRank = absScore + movePct * 4;
+
+    if (opts?.force || (absScore >= 34 && mixer.direction !== 'NONE' && evaluateHtfQuality(closed15, closed1h, mixer.direction))) {
+      if (!bestCandidate || compositeRank > bestCandidate.score) {
+        bestCandidate = { symbol: sym, candles15m: closed15, candles1h: closed1h, score: compositeRank };
+      }
     }
   }
 
-  // 3) If no mechanical trigger fired, consult Dollarino Central AI on top mover (or BTCUSDT when forced)
-  if (!chosenSignal) {
+  // 3) Only consult Central AI (1 lightweight model call) when a genuinely strong A+ candidate exists (or when forced)
+  if (!chosenSignal && (bestCandidate || opts?.force)) {
     const targetSym = bestCandidate?.symbol || 'BTCUSDT';
-    const raw1h = await fetchPublicKlines(targetSym, '1h', 120, proxyCfg).catch(() => []);
-    const htf = selectClosedCandles(raw1h, '1h');
-    const candles = bestCandidate?.candles1h?.length ? bestCandidate.candles1h : htf;
+    let candles = bestCandidate?.candles15m ?? [];
+    let htf = bestCandidate?.candles1h ?? [];
+    if (candles.length < 30) {
+      const [raw15, raw1h] = await Promise.all([
+        fetchPublicKlines(targetSym, '15m', 120, proxyCfg).catch(() => []),
+        fetchPublicKlines(targetSym, '1h', 120, proxyCfg).catch(() => []),
+      ]);
+      candles = selectClosedCandles(raw15, '15m');
+      htf = selectClosedCandles(raw1h, '1h');
+    }
     if (candles.length >= 30) {
       const decision = await runAutonomousAITrader(env, 'system_radar', {
         symbol: targetSym,
@@ -171,7 +269,7 @@ export async function runAlwaysOnSignalRadar(
         candles,
         htfCandles: htf.length >= 25 ? htf : undefined,
         maxLeverage: 10,
-        minConfidence: opts?.force ? 60 : 72,
+        minConfidence: opts?.force ? 60 : 78,
         riskPreset: 'balanced',
       }).catch(() => null);
 
@@ -179,26 +277,35 @@ export async function runAlwaysOnSignalRadar(
         decision &&
         decision.ok &&
         (decision.action === 'LONG' || decision.action === 'SHORT') &&
-        decision.confidence >= (opts?.force ? 60 : 72) &&
+        decision.confidence >= (opts?.force ? 60 : 78) &&
         decision.entry > 0 &&
         decision.stopLoss > 0 &&
         decision.tp1 > 0
       ) {
-        chosenEngineKey = 'ai_autonomous_agent';
-        chosenSignal = {
-          symbol: targetSym,
-          direction: decision.action,
-          timeframe: '15m',
-          price: roundSignalPrice(decision.entry, decision.entry),
-          stopLoss: roundSignalPrice(decision.stopLoss, decision.entry),
-          leverage: Math.min(10, Math.max(3, decision.leverage || 5)),
-          tp1: roundSignalPrice(decision.tp1, decision.entry),
-          tp2: decision.tp2 > 0 ? roundSignalPrice(decision.tp2, decision.entry) : undefined,
-          tp3: decision.tp3 > 0 ? roundSignalPrice(decision.tp3, decision.entry) : undefined,
-          channelHandle: cfg.channelHandle,
-          engineKey: 'ai_autonomous_agent',
-          engineLabel: resolveEngineDisplayLabel('ai_autonomous_agent'),
-        };
+        const rr = computeSignalRR(
+          String(decision.entry),
+          String(decision.stopLoss),
+          String(decision.tp1),
+          decision.tp2 > 0 ? String(decision.tp2) : undefined
+        );
+        const htfOk = opts?.force || evaluateHtfQuality(candles, htf, decision.action);
+        if (htfOk && (opts?.force || rr >= 1.8)) {
+          chosenEngineKey = 'ai_autonomous_agent';
+          chosenSignal = {
+            symbol: targetSym,
+            direction: decision.action,
+            timeframe: '15m',
+            price: roundSignalPrice(decision.entry, decision.entry),
+            stopLoss: roundSignalPrice(decision.stopLoss, decision.entry),
+            leverage: Math.min(10, Math.max(3, decision.leverage || 5)),
+            tp1: roundSignalPrice(decision.tp1, decision.entry),
+            tp2: decision.tp2 > 0 ? roundSignalPrice(decision.tp2, decision.entry) : undefined,
+            tp3: decision.tp3 > 0 ? roundSignalPrice(decision.tp3, decision.entry) : undefined,
+            channelHandle: cfg.channelHandle,
+            engineKey: 'ai_autonomous_agent',
+            engineLabel: resolveEngineDisplayLabel('ai_autonomous_agent'),
+          };
+        }
       }
     }
   }
@@ -286,13 +393,15 @@ async function gatherMarketSnapshot(env: Env): Promise<{
 async function generateAiPersianPost(
   env: Env,
   systemPrompt: string,
-  userPrompt: string
+  userPrompt: string,
+  maxTokens = 520
 ): Promise<string | null> {
   const ensemble = await resolveAIEnsemble(env).catch(() => null);
   const primary = ensemble?.engines?.[0];
   if (!primary) return null;
   try {
-    const out = await callBYOAI(primary, systemPrompt, userPrompt, { fastJson: false });
+    const compactEngine = { ...primary, maxTokens: Math.min(primary.maxTokens || maxTokens, maxTokens) };
+    const out = await callBYOAI(compactEngine, systemPrompt, userPrompt, { fastJson: true });
     const cleaned = out.trim();
     return cleaned.length >= 40 ? cleaned.slice(0, 1400) : null;
   } catch {
@@ -335,15 +444,24 @@ export async function runAlwaysOnAiIntel(
   channelMessageId?: number;
   reason?: string;
 }> {
-  const enabled = (await getSystemSettingValue(env.DB, 'always_on_ai_broadcast_enabled', 'true')) === 'true';
+  const aiSettings = await getSettingsMap(env.DB, [
+    'always_on_ai_broadcast_enabled',
+    'intel_last_ai_check_at',
+    'intel_last_alert_at',
+    'intel_last_news_at',
+    'intel_last_analysis_at',
+    'intel_last_promo_at',
+    'intel_promo_cursor',
+  ]);
+  const enabled = (aiSettings['always_on_ai_broadcast_enabled'] ?? 'true') === 'true';
   if (!enabled && !opts?.forceKind) {
     return { published: false, reason: 'disabled' };
   }
 
-  // Throttle heavy snapshot checks to once every 10 minutes unless forced
+  // Check at most once every 5 minutes so 30-min news & alerts trigger smoothly without wasting API quota
   if (!opts?.forceKind) {
-    const minsCheck = await minutesSinceSetting(env.DB, 'intel_last_ai_check_at');
-    if (minsCheck < 10) {
+    const minsCheck = minsFromIso(aiSettings['intel_last_ai_check_at']);
+    if (minsCheck < 5) {
       return { published: false, reason: 'check_cooldown' };
     }
   }
@@ -359,11 +477,11 @@ export async function runAlwaysOnAiIntel(
 
   const fk = opts?.forceKind;
 
-  // 1) Priority 1: ALERT on extreme market move / overbought-oversold RSI
-  const extremeCoin = snap.coins.find((c) => Math.abs(c.changePct24h) >= 6.5);
-  const extremeRsi = snap.btcRsi1h >= 77 || snap.btcRsi1h <= 23;
-  const minsAlert = await minutesSinceSetting(env.DB, 'intel_last_alert_at');
-  if (fk === 'ALERT' || (!fk && (extremeCoin || extremeRsi) && minsAlert >= 120)) {
+  // 1) Priority 1: ALERT on extreme market move / overbought-oversold RSI (180m cooldown)
+  const extremeCoin = snap.coins.find((c) => Math.abs(c.changePct24h) >= 7.5);
+  const extremeRsi = snap.btcRsi1h >= 78 || snap.btcRsi1h <= 22;
+  const minsAlert = minsFromIso(aiSettings['intel_last_alert_at']);
+  if (fk === 'ALERT' || (!fk && (extremeCoin || extremeRsi) && minsAlert >= 180)) {
     const triggerReason = extremeCoin
       ? `نوسان شدید ۲۴ ساعته روی ${extremeCoin.symbol.replace('USDT', '')} (${extremeCoin.changePct24h >= 0 ? '+' : ''}${extremeCoin.changePct24h.toFixed(2)}%)`
       : `وضعیت اشباع RSI یک‌ساعته بیت‌کوین (RSI = ${snap.btcRsi1h})`;
@@ -371,7 +489,8 @@ export async function runAlwaysOnAiIntel(
     const aiText = await generateAiPersianPost(
       env,
       'شما مدیر ریسک و تحلیلگر ارشد هوش مصنوعی دلارینو هستید. یک اخطار کوتاه، دقیق و حرفه‌ای به فارسی بنویسید (حداکثر ۶ خط). روی حفظ سرمایه، کاهش اهرم و فعال‌کردن حد ضرر و سپر ریسک دلارینو تاکید کنید.',
-      `رویداد فوری بازار: ${triggerReason}\nقیمت‌های لحظه‌ای: ${summaryLines || 'BTC/ETH live'}`
+      `رویداد فوری بازار: ${triggerReason}\nقیمت‌های لحظه‌ای: ${summaryLines || 'BTC/ETH live'}`,
+      420
     );
 
     const body =
@@ -393,13 +512,47 @@ export async function runAlwaysOnAiIntel(
     return { published: true, kind: 'ALERT', usersNotified: res.usersNotified, channelMessageId: res.channelMessageId };
   }
 
-  // 2) Priority 2: AI Market Analysis every 4 hours (240 mins)
-  const minsAnalysis = await minutesSinceSetting(env.DB, 'intel_last_analysis_at');
-  if (fk === 'ANALYSIS' || (!fk && minsAnalysis >= 240)) {
+  // 2) Priority 2: Crypto News Summary EVERY 30 MINUTES (low-token lightweight AI summary)
+  const minsNews = minsFromIso(aiSettings['intel_last_news_at']);
+  if (fk === 'NEWS' || (!fk && minsNews >= 30)) {
+    const headlines = await fetchPublicCryptoHeadlines();
+    const headlineTxt = headlines.map((h, i) => `${i + 1}. [${h.source}] ${h.title}`).join('\n');
     const aiText = await generateAiPersianPost(
       env,
-      'شما موتور تحلیلگر هوش مصنوعی پلتفرم دلارینو (Dollarino) هستید. به فارسی حرفه‌ای، ساختارمند و جذاب تحلیل لحظه‌ای بازار کریپتو را بنویسید (حداکثر ۱۰ خط). حتماً فقط از اعداد واقعی داده‌شده استفاده کنید و در انتها به امکانات پایانه چارت AI و کپی‌ترید دلارینو اشاره کنید.',
-      `داده‌های زنده بازار:\n${summaryLines || 'اطلاعات قیمت لحظه‌ای'}\nBTC 1H RSI: ${snap.btcRsi1h} | EMA20: $${snap.btcEma20} | EMA50: $${snap.btcEma50}\nBTC High/Low 24h: $${btc?.high24h ?? 0} / $${btc?.low24h ?? 0}\nETH High/Low 24h: $${eth?.high24h ?? 0} / $${eth?.low24h ?? 0}`
+      'شما خبرنگار و تحلیلگر اقتصادی هوش مصنوعی دلارینو هستید. تیترهای خبری و قیمت‌های لحظه‌ای را در ۴ تا ۶ خط خلاصه به فارسی روان بنویسید و تاثیر کوتاه‌مدت آن روی بیت‌کوین و بازار را بگویید.',
+      `${headlineTxt ? `تازه‌ترین اخبار کریپتو:\n${headlineTxt}\n\n` : ''}نبض لحظه‌ای قیمت‌ها:\n${summaryLines}`,
+      420
+    );
+
+    const body =
+      aiText ||
+      (headlines.length
+        ? `🗞 مهم‌ترین اخبار نیم‌ساعت اخیر بازار:\n` +
+          headlines.map((h) => `• ${h.title} (${h.source})`).join('\n') +
+          `\n\n📊 نبض بازار: ${summaryLines || 'رصد ۲۴ ساعته فعال است'}\n\n` +
+          `🤖 رادار سیگنال دلارینو فقط فرصت‌های باکیفیت و تاییدشده را ارسال می‌کند.`
+        : `📊 خلاصه نبض ۳۰ دقیقه‌ای بازار:\n${summaryLines}\n\n` +
+          `بیشترین تمرکز نقدینگی روی جفت‌ارزهای اصلی و توکن‌های پرشتاب DEX دیده می‌شود.`);
+
+    const res = await publishChannelNews(env, {
+      category: 'NEWS',
+      title: 'بسته خبری نیم‌ساعته و نبض لحظه‌ای بازار کریپتو',
+      body,
+      notifyBotUsers: true,
+      createdBy: 'ai_intel_daemon',
+    });
+    await setSetting(env.DB, 'intel_last_news_at', new Date().toISOString());
+    return { published: true, kind: 'NEWS', usersNotified: res.usersNotified, channelMessageId: res.channelMessageId };
+  }
+
+  // 3) Priority 3: AI Market Analysis every 3 hours (180 mins)
+  const minsAnalysis = minsFromIso(aiSettings['intel_last_analysis_at']);
+  if (fk === 'ANALYSIS' || (!fk && minsAnalysis >= 180)) {
+    const aiText = await generateAiPersianPost(
+      env,
+      'شما موتور تحلیلگر هوش مصنوعی پلتفرم دلارینو (Dollarino) هستید. به فارسی حرفه‌ای، ساختارمند و جذاب تحلیل لحظه‌ای بازار کریپتو را بنویسید (حداکثر ۸ خط). فقط از اعداد واقعی داده‌شده استفاده کنید.',
+      `داده‌های زنده بازار:\n${summaryLines || 'اطلاعات قیمت لحظه‌ای'}\nBTC 1H RSI: ${snap.btcRsi1h} | EMA20: $${snap.btcEma20} | EMA50: $${snap.btcEma50}\nBTC High/Low 24h: $${btc?.high24h ?? 0} / $${btc?.low24h ?? 0}\nETH High/Low 24h: $${eth?.high24h ?? 0} / $${eth?.low24h ?? 0}`,
+      480
     );
 
     const trendFa =
@@ -430,42 +583,10 @@ export async function runAlwaysOnAiIntel(
     return { published: true, kind: 'ANALYSIS', usersNotified: res.usersNotified, channelMessageId: res.channelMessageId };
   }
 
-  // 3) Priority 3: Crypto News Summary every 6 hours (360 mins)
-  const minsNews = await minutesSinceSetting(env.DB, 'intel_last_news_at');
-  if (fk === 'NEWS' || (!fk && minsNews >= 360)) {
-    const headlines = await fetchPublicCryptoHeadlines();
-    const headlineTxt = headlines.map((h, i) => `${i + 1}. [${h.source}] ${h.title}`).join('\n');
-    const aiText = await generateAiPersianPost(
-      env,
-      'شما خبرنگار و تحلیلگر اقتصادی هوش مصنوعی دلارینو هستید. تیترهای خبری و وضعیت بازار را به فارسی روان خلاصه کرده و تاثیر احتمالی آن‌ها بر بیت‌کوین و آلت‌کوین‌ها را در ۵ تا ۸ خط توضیح دهید.',
-      `${headlineTxt ? `اخبار روز کریپتو:\n${headlineTxt}\n\n` : ''}نبض قیمت‌های لحظه‌ای:\n${summaryLines}`
-    );
-
-    const body =
-      aiText ||
-      (headlines.length
-        ? `🗞 مهم‌ترین رویدادهای روز بازار:\n` +
-          headlines.map((h) => `• ${h.title} (${h.source})`).join('\n') +
-          `\n\n📊 نبض بازار: ${summaryLines || 'رصد ۲۴ ساعته فعال است'}\n\n` +
-          `🤖 ربات هوش مصنوعی دلارینو تمام نوسانات ناشی از اخبار را به‌صورت ۲۴ ساعته رصد و فرصت‌های ایمن را ارسال می‌کند.`
-        : `📊 خلاصه نبض سشن معاملاتی:\n${summaryLines}\n\n` +
-          `بیشترین تمرکز نقدینگی امروز روی جفت‌ارزهای اصلی و توکن‌های پرشتاب DEX دیده می‌شود. رصد لحظه‌ای در رادار DexScreener و پایانه دلارینو فعال است.`);
-
-    const res = await publishChannelNews(env, {
-      category: 'NEWS',
-      title: 'خبر فوری و خلاصه رویدادهای مهم بازار کریپتو',
-      body,
-      notifyBotUsers: true,
-      createdBy: 'ai_intel_daemon',
-    });
-    await setSetting(env.DB, 'intel_last_news_at', new Date().toISOString());
-    return { published: true, kind: 'NEWS', usersNotified: res.usersNotified, channelMessageId: res.channelMessageId };
-  }
-
-  // 4) Priority 4: Rotating Dollarino Platform Showcase / Promotional Spotlight every 8 hours (480 mins)
-  const minsPromo = await minutesSinceSetting(env.DB, 'intel_last_promo_at');
-  if (fk === 'PROMO' || (!fk && minsPromo >= 480)) {
-    const promoCursorStr = await getSystemSettingValue(env.DB, 'intel_promo_cursor', '0');
+  // 4) Priority 4: Rotating Dollarino Platform Showcase / Promotional Spotlight every 12 hours (720 mins)
+  const minsPromo = minsFromIso(aiSettings['intel_last_promo_at']);
+  if (fk === 'PROMO' || (!fk && minsPromo >= 720)) {
+    const promoCursorStr = aiSettings['intel_promo_cursor'] ?? '0';
     const promoCursor = (Number.parseInt(promoCursorStr, 10) || 0) % 4;
     await setSetting(env.DB, 'intel_promo_cursor', String((promoCursor + 1) % 4));
 

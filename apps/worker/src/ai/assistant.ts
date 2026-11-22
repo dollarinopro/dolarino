@@ -100,7 +100,10 @@ export async function listSelectableAIModels(
     let modelName = (r.model || '').trim();
     const lowerM = modelName.toLowerCase();
     const isHilinkup = (r.base_url || '').includes('hilinkup.com');
-    if (isHilinkup && (!modelName || lowerM === 'deep' || lowerM === 'deepseek' || lowerM === 'دیپی' || lowerM === 'deepseek-v4')) {
+    if (
+      isHilinkup &&
+      (!modelName || lowerM === 'deep' || lowerM === 'deepseek' || lowerM === 'دیپی' || lowerM === 'deepseek-v4' || lowerM === 'deepseek-chat')
+    ) {
       modelName = env.HILINKUP_MODEL?.trim() || 'baidu/deepseek-v4.1-flash-1017';
     } else if (r.provider === 'deepseek' && (!modelName || lowerM === 'deep' || lowerM === 'دیپی')) {
       modelName = isHilinkup ? (env.HILINKUP_MODEL?.trim() || 'baidu/deepseek-v4.1-flash-1017') : 'deepseek-chat';
@@ -307,7 +310,10 @@ export async function resolveModelRecordById(
       let modelName = (platRow.model || '').trim();
       const lowerM = modelName.toLowerCase();
       const isHilinkup = (platRow.base_url || '').includes('hilinkup.com');
-      if (isHilinkup && (!modelName || lowerM === 'deep' || lowerM === 'deepseek' || lowerM === 'دیپی' || lowerM === 'deepseek-v4')) {
+      if (
+        isHilinkup &&
+        (!modelName || lowerM === 'deep' || lowerM === 'deepseek' || lowerM === 'دیپی' || lowerM === 'deepseek-v4' || lowerM === 'deepseek-chat')
+      ) {
         modelName = env.HILINKUP_MODEL?.trim() || 'baidu/deepseek-v4.1-flash-1017';
       } else if (platRow.provider === 'deepseek' && (!modelName || lowerM === 'deep' || lowerM === 'دیپی')) {
         modelName = isHilinkup ? (env.HILINKUP_MODEL?.trim() || 'baidu/deepseek-v4.1-flash-1017') : 'deepseek-chat';
@@ -453,7 +459,7 @@ export async function callMultimodalChatAI(
   const endpoint = rawBase.endsWith('/chat/completions') ? rawBase : `${rawBase}/chat/completions`;
   const primaryModel = ai.model || (ai.provider === 'deepseek' ? 'deepseek-chat' : 'gpt-4o-mini');
   const candidateModels = rawBase.includes('hilinkup.com')
-    ? Array.from(new Set([primaryModel, 'baidu/deepseek-v4.1-flash-1017', 'deepseek-chat']))
+    ? Array.from(new Set([primaryModel, 'baidu/deepseek-v4.1-flash-1017', 'deepseek/deepseek-v4.1-flash-1017', 'doubao/deepseek-v4.1-flash-1017']))
     : ai.provider === 'deepseek'
       ? Array.from(new Set([primaryModel, 'deepseek-chat']))
       : [primaryModel];
@@ -488,6 +494,9 @@ export async function callMultimodalChatAI(
       max_tokens: isReasoningModel ? Math.max(ai.maxTokens || 2600, 2600) : Math.max(ai.maxTokens || 2048, 2048),
       messages,
     };
+    if (rawBase.includes('hilinkup.com') && (model.includes('flash-1017') || model.includes('deepseek-v4'))) {
+      payload.thinking = { type: 'disabled' };
+    }
     if (!isReasoningModel) {
       payload.temperature = ai.temperature ?? 0.35;
     }

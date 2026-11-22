@@ -194,6 +194,14 @@ export interface RecentSignalRow {
 }
 
 export interface DashboardPayload {
+  activeEngine?: {
+    activeEngine: 'CENTRAL_AI' | 'MY_AI' | 'STRATEGY' | 'COPY_TRADE' | 'NONE';
+    strategyKey: string;
+    botState: string;
+    isBotRunning: boolean;
+    myAiActive: boolean;
+    activeCopyTradersCount: number;
+  };
   config: {
     bot_state: string;
     trading_mode: 'PAPER' | 'LIVE';

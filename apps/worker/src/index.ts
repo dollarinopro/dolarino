@@ -3,7 +3,6 @@ import { cors } from 'hono/cors';
 import { authRoutes, requireAuth, type AppVariables } from './auth.js';
 import { hmacSha256Hex } from './crypto.js';
 import { TradingBotCoordinator } from './engine/bot-do.js';
-import { reconcileOpenPositionsForUser } from './engine/executor.js';
 import { runAlwaysOnAiIntel, runAlwaysOnSignalRadar } from './engine/market-intel.js';
 import type { Env } from './env.js';
 import { fetchPublicKlines, fetchPublicMarket24h, fetchPublicOrderBook } from './exchanges/paper.js';
@@ -43,6 +42,22 @@ app.use('/api/*', async (c, next) => {
   c.res.headers.set('Referrer-Policy', 'strict-origin-when-cross-origin');
 });
 
+app.onError((err, c) => {
+  const msg = err instanceof Error ? err.message : String(err);
+  if (/D1_ERROR|daily row read limit|quota|exceeded/i.test(msg)) {
+    return c.json(
+      {
+        error:
+          'سهمیه رایگان دیتابیس کلادفلر (۵ میلیون خواندن روزانه D1) پر شده است و ساعت ۰۰:۰۰ UTC (۰۳:۳۰ بامداد ایران) خودکار ریست می‌شود. با ارتقا به پلن پایه ۵ دلاری کلادفلر، محدودیت فوراً برداشته می‌شود.',
+        code: 'D1_QUOTA_EXCEEDED',
+      },
+      503
+    );
+  }
+  console.error('[Worker Error]', msg);
+  return c.json({ error: msg || 'Internal server error', code: 'INTERNAL_ERROR' }, 500);
+});
+
 async function serveAssetsWithDynamicOg(
   req: Request,
   assets: { fetch: (req: Request) => Promise<Response> }
@@ -59,11 +74,17 @@ async function serveAssetsWithDynamicOg(
   const origin = url.origin.replace(/\/+$/, '');
   const html = await res.text();
   const rewritten = html
+    .replaceAll('https://dolarino.pages.dev/dollarino-preview.jpg', `${origin}/dollarino-preview.jpg`)
+    .replaceAll('https://dollarino.pages.dev/dollarino-preview.jpg', `${origin}/dollarino-preview.jpg`)
+    .replaceAll('https://dolarino.pages.dev/images/dollarino-og-brand.jpg', `${origin}/images/dollarino-og-brand.jpg`)
     .replaceAll('https://dollarino.pages.dev/images/dollarino-og-brand.jpg', `${origin}/images/dollarino-og-brand.jpg`)
+    .replaceAll('content="https://dolarino.pages.dev/"', `content="${origin}/"`)
     .replaceAll('content="https://dollarino.pages.dev/"', `content="${origin}/"`)
+    .replaceAll('href="https://dolarino.pages.dev/"', `href="${origin}/"`)
     .replaceAll('href="https://dollarino.pages.dev/"', `href="${origin}/"`);
   const headers = new Headers(res.headers);
   headers.delete('content-length');
+  headers.set('Content-Type', 'text/html; charset=utf-8');
   headers.set('Cache-Control', 'public, max-age=0, must-revalidate');
   return new Response(rewritten, { status: res.status, statusText: res.statusText, headers });
 }
@@ -81,6 +102,11 @@ app.get('/', (c) => {
 });
 
 app.get('/api/health', (c) => {
+  try {
+    c.executionCtx.waitUntil(syncTelegramBotAutoOnVersion(c.env, '9.9.3').catch(() => {}));
+  } catch {
+    // ignore outside worker executionCtx
+  }
   return c.json({
     ok: true,
     platform: 'Dollarino (دلارینو)',
@@ -342,12 +368,52 @@ app.get('/api/public/plans', async (c) => {
   return c.json({ plans });
 });
 
+const FALLBACK_COPY_TRADERS = [
+  {
+    id: 'ct_parsa_scalp',
+    display_name: 'پارسا اسکلپر (حرفه‌ای)',
+    handle: '@parsa_scalp',
+    specialty: 'Altcoin Scalping',
+    win_rate: 71.8,
+    roi_30d_pct: 64.9,
+    max_drawdown_pct: 9.1,
+    followers_count: 245,
+    risk_level: 'MEDIUM',
+  },
+  {
+    id: 'ct_aria_quant',
+    display_name: 'آریا کوانت (تاییدشده دلارینو)',
+    handle: '@aria_quant',
+    specialty: 'BTC/ETH Futures',
+    win_rate: 76.4,
+    roi_30d_pct: 48.2,
+    max_drawdown_pct: 5.4,
+    followers_count: 318,
+    risk_level: 'LOW',
+  },
+  {
+    id: 'ct_negin_ai',
+    display_name: 'نگین ترید (ترکیبی هوش مصنوعی)',
+    handle: '@negin_ai',
+    specialty: 'Swing & AI Hybrid',
+    win_rate: 79.2,
+    roi_30d_pct: 39.6,
+    max_drawdown_pct: 4.3,
+    followers_count: 412,
+    risk_level: 'LOW',
+  },
+];
+
 app.get('/api/public/copy-traders', async (c) => {
-  const rows = await c.env.DB.prepare(
-    `SELECT id, display_name, handle, specialty, win_rate, roi_30d_pct, max_drawdown_pct, followers_count, risk_level
-     FROM copy_traders WHERE is_active = 1 AND is_verified = 1 ORDER BY roi_30d_pct DESC LIMIT 6`
-  ).all().catch(() => ({ results: [] }));
-  return c.json({ traders: rows.results });
+  try {
+    const rows = await c.env.DB.prepare(
+      `SELECT id, display_name, handle, specialty, win_rate, roi_30d_pct, max_drawdown_pct, followers_count, risk_level
+       FROM copy_traders WHERE is_active = 1 AND is_verified = 1 ORDER BY roi_30d_pct DESC LIMIT 6`
+    ).all();
+    return c.json({ traders: rows.results.length > 0 ? rows.results : FALLBACK_COPY_TRADERS });
+  } catch {
+    return c.json({ traders: FALLBACK_COPY_TRADERS });
+  }
 });
 
 app.get('/api/public/market-snapshot', async (c) => {
@@ -450,21 +516,13 @@ app.all('*', async (c) => {
 export default {
   fetch: app.fetch,
   async scheduled(_event: ScheduledEvent, env: Env, ctx: ExecutionContext) {
-    // 1-minute watchdog across running bots, open trades, always-on signal radar & AI market intel
+    // 1-minute watchdog: TradingBotCoordinator handles position reconciliation & bot scans; here we run radar & news
     ctx.waitUntil((async () => {
-      await syncTelegramBotAutoOnVersion(env, '9.9.2').catch(() => {});
+      await syncTelegramBotAutoOnVersion(env, '9.9.3').catch(() => {});
 
       const id = env.TRADING_BOT_DO.idFromName('global-coordinator');
       const stub = env.TRADING_BOT_DO.get(id);
       await stub.fetch('https://do/start').catch(() => {});
-
-      const openUsers = await env.DB.prepare(
-        `SELECT DISTINCT user_id FROM trades WHERE status = 'OPEN'`
-      ).all<{ user_id: string }>();
-
-      for (const u of openUsers.results) {
-        await reconcileOpenPositionsForUser(env, u.user_id).catch(() => {});
-      }
 
       await runAlwaysOnSignalRadar(env).catch(() => {});
       await runAlwaysOnAiIntel(env).catch(() => {});

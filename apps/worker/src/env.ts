@@ -13,6 +13,7 @@ export interface Env {
   TOOBIT_PROXY_URL?: string;
   EXCHANGE_PROXY_SECRET?: string;
   HILINKUP_API_KEY?: string;
+  HILINKUP_TEST_API_KEY?: string;
   HILINKUP_BASE_URL?: string;
   HILINKUP_MODEL?: string;
   AI?: { run(model: string, input: Record<string, unknown>): Promise<unknown> };
