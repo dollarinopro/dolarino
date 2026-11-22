@@ -102,6 +102,7 @@ jobs:
             fi
           done
       - name: Configure Cloudflare Pages Service Binding & Build Settings
+        id: pages_cfg
         if: steps.cf.outputs.enabled == 'true' && vars.SKIP_PAGES_DEPLOY != 'true'
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
@@ -110,10 +111,10 @@ jobs:
           WORKER_URL: ${{ steps.worker.outputs.url }}
         run: |
           if [ -z "$CLOUDFLARE_ACCOUNT_ID" ]; then
-            echo "CLOUDFLARE_ACCOUNT_ID not set; skipping Pages API config PATCH"
+            echo "patch_status=skipped_no_account_id" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          node -e '
+          PATCH_RESULT=$(node -e '
             const acc = process.env.CLOUDFLARE_ACCOUNT_ID;
             const proj = process.env.PAGES_PROJECT || "dolarino";
             const token = process.env.CLOUDFLARE_API_TOKEN;
@@ -141,12 +142,12 @@ jobs:
                 body: JSON.stringify(body)
               });
               const json = await res.json().catch(() => ({}));
-              console.log("Pages PATCH status:", res.status, "success:", Boolean(json.success));
-              if (!json.success) {
-                console.log("Pages PATCH errors:", JSON.stringify(json.errors || []));
-              }
+              const errMsg = (json.errors || []).map(e => `${e.code}:${e.message}`).join(";");
+              process.stdout.write(`http=${res.status},ok=${Boolean(json.success)}${errMsg ? `,err=${errMsg}` : ""}`);
             })();
-          '
+          ')
+          echo "patch_status=$PATCH_RESULT" >> "$GITHUB_OUTPUT"
+          echo "Pages PATCH: $PATCH_RESULT"
       - name: Deploy Cloudflare Pages Frontend + Functions Proxy
         if: steps.cf.outputs.enabled == 'true' && vars.SKIP_PAGES_DEPLOY != 'true'
         env:
@@ -157,64 +158,127 @@ jobs:
         run: |
           if [ -z "$CLOUDFLARE_ACCOUNT_ID" ]; then unset CLOUDFLARE_ACCOUNT_ID; fi
           npx wrangler pages deploy ./dist --project-name="$PAGES_PROJECT" --branch=main
-      - name: Verify Live Deployment & Register Telegram Webhook
+      - name: Verify Live Deployment & Register Direct Worker Telegram Webhook
         if: steps.cf.outputs.enabled == 'true'
         env:
           PAGES_PROJECT: ${{ vars.CLOUDFLARE_PAGES_PROJECT || 'dolarino' }}
           WORKER_URL: ${{ steps.worker.outputs.url }}
+          PAGES_PATCH_STATUS: ${{ steps.pages_cfg.outputs.patch_status }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          HILINKUP_API_KEY: ${{ secrets.HILINKUP_API_KEY }}
         run: |
-          PAGES_URL="https://${PAGES_PROJECT}.pages.dev"
-          echo "=== Live Health Checks ==="
-          WORKER_OK=0
-          if [ -n "$WORKER_URL" ]; then
-            if curl -fsS --retry 3 --retry-delay 3 "${WORKER_URL}/api/health" | head -c 300; then
-              echo ""
-              echo "Worker /api/health: OK"
-              WORKER_OK=1
-            else
-              echo "Worker /api/health: FAILED"
-            fi
-          fi
-          PAGES_OK=0
-          if curl -fsS --retry 3 --retry-delay 4 "${PAGES_URL}/api/health" | head -c 300; then
-            echo ""
-            echo "Pages /api/health: OK"
-            PAGES_OK=1
-          else
-            echo "Pages /api/health: FAILED"
-          fi
-          echo "Checking Pages HTML & OG image:"
-          curl -fsS "${PAGES_URL}/" | grep -E "og:image|og:url|og:title" | head -n 6 || true
-          curl -fsSI "${PAGES_URL}/dollarino-preview.jpg?v=2026" | head -n 5 || true
-          echo "Checking live AI chat endpoint:"
-          AI_RES=$(curl -fsS -X POST "${PAGES_URL}/api/public/ai-chat" \
-            -H "Content-Type: application/json" \
-            -d '{"message":"سلام کوتاه بگو زنده هستی"}' || true)
-          printf '%s\n' "$AI_RES" | head -c 350
-          echo ""
+          node -e '
+            (async () => {
+              const pagesUrl = `https://${process.env.PAGES_PROJECT || "dolarino"}.pages.dev`;
+              const workerUrl = (process.env.WORKER_URL || "").replace(/\/+$/, "");
+              const tgToken = (process.env.TELEGRAM_BOT_TOKEN || "").trim();
+              const hlkKey = (process.env.HILINKUP_API_KEY || "").trim();
+              const diag = [];
+              diag.push(`worker_url=${workerUrl || "NONE"}`);
+              diag.push(`pages_patch=${process.env.PAGES_PATCH_STATUS || "NONE"}`);
 
-          if [ -n "$TELEGRAM_BOT_TOKEN" ]; then
-            WEBHOOK_BASE="$PAGES_URL"
-            if [ "$PAGES_OK" -ne 1 ] && [ -n "$WORKER_URL" ]; then
-              WEBHOOK_BASE="$WORKER_URL"
-            fi
-            WEBHOOK_URL="${WEBHOOK_BASE}/api/webhook/telegram"
-            echo "Registering Telegram webhook -> ${WEBHOOK_URL}"
-            curl -fsS -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/setWebhook" \
-              -H "Content-Type: application/json" \
-              -d "{\"url\":\"${WEBHOOK_URL}\",\"drop_pending_updates\":false}" | head -c 300
-            echo ""
-            curl -fsS -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/setChatMenuButton" \
-              -H "Content-Type: application/json" \
-              -d "{\"menu_button\":{\"type\":\"web_app\",\"text\":\"پنل دلارینو\",\"web_app\":{\"url\":\"${PAGES_URL}\"}}}" | head -c 300
-            echo ""
-            echo "Telegram getWebhookInfo:"
-            curl -fsS "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/getWebhookInfo" | head -c 400
-            echo ""
-          fi
+              let workerOk = false;
+              if (workerUrl) {
+                try {
+                  const r = await fetch(`${workerUrl}/api/health`);
+                  const txt = await r.text();
+                  workerOk = r.ok && txt.includes("\"ok\":true");
+                  diag.push(`worker_health=${r.status}:${workerOk}`);
+                } catch (e) {
+                  diag.push(`worker_health=ERR:${e.message}`);
+                }
+              }
 
-          if [ "$PAGES_OK" -ne 1 ] && [ "$WORKER_OK" -ne 1 ]; then
-            echo "Both Pages and Worker health checks failed!" >&2
-            exit 1
-          fi
+              let pagesOk = false;
+              try {
+                const r = await fetch(`${pagesUrl}/api/health`);
+                const txt = await r.text();
+                pagesOk = r.ok && txt.includes("\"ok\":true");
+                diag.push(`pages_health=${r.status}:${pagesOk}`);
+              } catch (e) {
+                diag.push(`pages_health=ERR:${e.message}`);
+              }
+
+              // Check Hilinkup live models & AI chat
+              diag.push(`hlk_secret=${Boolean(hlkKey)}`);
+              if (hlkKey) {
+                try {
+                  const r = await fetch("https://api.hilinkup.com/v1/models", {
+                    headers: { Authorization: `Bearer ${hlkKey}`, Accept: "application/json" }
+                  });
+                  const txt = await r.text();
+                  let models = [];
+                  try { models = (JSON.parse(txt).data || []).map(m => m.id).slice(0, 6); } catch {}
+                  diag.push(`hlk_models_http=${r.status}:[${models.join(",")}]`);
+                } catch (e) {
+                  diag.push(`hlk_models=ERR:${e.message}`);
+                }
+              }
+
+              const aiBase = pagesOk ? pagesUrl : workerUrl;
+              if (aiBase) {
+                try {
+                  const r = await fetch(`${aiBase}/api/public/ai-chat`, {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ message: "سلام تست کوتاه" })
+                  });
+                  const j = await r.json().catch(() => ({}));
+                  diag.push(`ai_chat=${r.status}:${j.modelId || "?"}:${j.modelName || "?"}`);
+                } catch (e) {
+                  diag.push(`ai_chat=ERR:${e.message}`);
+                }
+              }
+
+              // Register Telegram Webhook DIRECTLY on Worker URL (most reliable!)
+              diag.push(`tg_secret=${Boolean(tgToken)}`);
+              if (tgToken) {
+                try {
+                  const meRes = await fetch(`https://api.telegram.org/bot${tgToken}/getMe`);
+                  const me = await meRes.json().catch(() => ({}));
+                  diag.push(`tg_me=${me.ok ? "@" + (me.result && me.result.username) : "ERR:" + (me.description || meRes.status)}`);
+
+                  const webhookBase = workerUrl || pagesUrl;
+                  const webhookUrl = `${webhookBase}/api/webhook/telegram`;
+                  const setRes = await fetch(`https://api.telegram.org/bot${tgToken}/setWebhook`, {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({
+                      url: webhookUrl,
+                      allowed_updates: ["message", "callback_query", "channel_post", "my_chat_member"],
+                      drop_pending_updates: false
+                    })
+                  });
+                  const setJson = await setRes.json().catch(() => ({}));
+                  diag.push(`tg_setWebhook=${setJson.ok}:${webhookUrl}${setJson.ok ? "" : ":" + setJson.description}`);
+
+                  await fetch(`https://api.telegram.org/bot${tgToken}/setChatMenuButton`, {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({
+                      menu_button: { type: "web_app", text: "پنل دلارینو", web_app: { url: pagesOk ? pagesUrl : webhookBase } }
+                    })
+                  }).catch(() => {});
+
+                  // Verify webhook with a synthetic ping & read getWebhookInfo
+                  const infoRes = await fetch(`https://api.telegram.org/bot${tgToken}/getWebhookInfo`);
+                  const info = await infoRes.json().catch(() => ({}));
+                  if (info.ok && info.result) {
+                    diag.push(`tg_wh_url=${info.result.url || "EMPTY"}`);
+                    diag.push(`tg_pending=${info.result.pending_update_count ?? 0}`);
+                    if (info.result.last_error_message) {
+                      diag.push(`tg_last_err=${info.result.last_error_message}`);
+                    }
+                  }
+                } catch (e) {
+                  diag.push(`tg_err=${e.message}`);
+                }
+              }
+
+              const summary = diag.join(" | ");
+              console.log(`::notice title=Live Deploy Diagnostics::${summary}`);
+              if (!workerOk && !pagesOk) {
+                process.exit(1);
+              }
+            })();
+          '

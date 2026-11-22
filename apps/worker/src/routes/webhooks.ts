@@ -206,7 +206,11 @@ webhookRoutes.post('/telegram/setup', requireAuth, async (c) => {
 
 let memSyncedVersion = '';
 
-export async function syncTelegramBotAutoOnVersion(env: Env, targetVersion = '9.9.3'): Promise<void> {
+export async function syncTelegramBotAutoOnVersion(
+  env: Env,
+  targetVersion = '9.9.5',
+  requestOrigin?: string
+): Promise<void> {
   if (memSyncedVersion === targetVersion) return;
 
   if (env.HILINKUP_TEST_API_KEY?.trim() && env.MASTER_ENCRYPTION_KEY) {
@@ -239,12 +243,27 @@ export async function syncTelegramBotAutoOnVersion(env: Env, targetVersion = '9.
 
   const client = new TelegramBotClient(env.TELEGRAM_BOT_TOKEN);
   const webAppUrl = (env.PUBLIC_WEB_URL || 'https://dolarino.pages.dev').replace(/\/$/, '');
-  const webhookUrl = `${webAppUrl}/api/webhook/telegram`;
+  const safeReqOrigin =
+    requestOrigin && requestOrigin.startsWith('https://') && !requestOrigin.includes('localhost') && !requestOrigin.includes('127.0.0.1')
+      ? requestOrigin.replace(/\/$/, '')
+      : '';
 
   await client.setMyCommands(DEFAULT_TG_COMMANDS);
   if (webAppUrl.startsWith('https://')) {
     await client.setChatMenuButton(webAppUrl, 'پنل دلارینو');
-    await client.setWebhook(webhookUrl, env.TELEGRAM_WEBHOOK_SECRET);
+  }
+
+  // Prefer keeping an already healthy *.workers.dev webhook instead of overwriting it with Pages proxy
+  const currentInfo = await client.getWebhookInfo().catch(() => null);
+  const currentUrl = currentInfo?.url || '';
+  const hasHealthyDirectWorkerWebhook =
+    currentUrl.includes('.workers.dev/api/webhook/telegram') && !currentInfo?.last_error_message;
+
+  if (!hasHealthyDirectWorkerWebhook) {
+    const webhookBase = safeReqOrigin || webAppUrl;
+    if (webhookBase.startsWith('https://')) {
+      await client.setWebhook(`${webhookBase}/api/webhook/telegram`, env.TELEGRAM_WEBHOOK_SECRET);
+    }
   }
   await env.DB.prepare(
     `INSERT INTO system_settings (key, value, updated_at) VALUES ('tg_bot_synced_version', ?, datetime('now'))
