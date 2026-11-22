@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import { formatDollarinoSignal, parseDollarinoSignal } from '@dollarino/core';
 import { requireAuth, type AppVariables } from '../auth.js';
-import { decryptVaultJson, encryptVaultJson, maskSecret, randomId } from '../crypto.js';
+import { decryptVaultJson, randomId } from '../crypto.js';
 import { executeSignalForUser, logAudit, notifyUserTelegram } from '../engine/executor.js';
 import type { Env } from '../env.js';
 import { resolveUserEntitlement } from './subscriptions.js';
@@ -204,38 +204,12 @@ webhookRoutes.post('/telegram/setup', requireAuth, async (c) => {
   });
 });
 
-let memSyncedVersion = '';
-
-export async function syncTelegramBotAutoOnVersion(env: Env, targetVersion = '9.9.3'): Promise<void> {
-  if (memSyncedVersion === targetVersion) return;
-
-  if (env.HILINKUP_TEST_API_KEY?.trim() && env.MASTER_ENCRYPTION_KEY) {
-    const testKey = env.HILINKUP_TEST_API_KEY.trim();
-    const masked = maskSecret(testKey);
-    const enc = await encryptVaultJson({ apiKey: testKey }, env.MASTER_ENCRYPTION_KEY).catch(() => null);
-    if (enc) {
-      await env.DB.prepare(
-        `INSERT INTO platform_ai_engines (id, slot_order, provider, label, model, base_url, weight, is_active, api_key_masked, encrypted_api_key, updated_at)
-         VALUES ('paie_hilinkup_test_slot', 9, 'deepseek', ?, 'baidu/deepseek-v4.1-flash-1017', 'https://api.hilinkup.com/v1', 50, 0, ?, ?, datetime('now'))
-         ON CONFLICT(id) DO UPDATE SET api_key_masked = excluded.api_key_masked, encrypted_api_key = excluded.encrypted_api_key, updated_at = datetime('now')`
-      )
-        .bind(`تست Hilinkup (${masked.slice(-4)})`, masked, enc)
-        .run()
-        .catch(() => {});
-    }
-  }
-
-  if (!env.TELEGRAM_BOT_TOKEN) {
-    memSyncedVersion = targetVersion;
-    return;
-  }
+export async function syncTelegramBotAutoOnVersion(env: Env, targetVersion = '9.7.0'): Promise<void> {
+  if (!env.TELEGRAM_BOT_TOKEN) return;
   const row = await env.DB.prepare(
     `SELECT value FROM system_settings WHERE key = 'tg_bot_synced_version' LIMIT 1`
   ).first<{ value: string }>().catch(() => null);
-  if (row?.value === targetVersion) {
-    memSyncedVersion = targetVersion;
-    return;
-  }
+  if (row?.value === targetVersion) return;
 
   const client = new TelegramBotClient(env.TELEGRAM_BOT_TOKEN);
   const webAppUrl = (env.PUBLIC_WEB_URL || 'https://dollarino.pages.dev').replace(/\/$/, '');
@@ -249,7 +223,6 @@ export async function syncTelegramBotAutoOnVersion(env: Env, targetVersion = '9.
   await env.DB.prepare(
     `INSERT INTO system_settings (key, value, updated_at) VALUES ('tg_bot_synced_version', ?, datetime('now'))
      ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = datetime('now')`
-  ).bind(targetVersion).run().catch(() => {});
-  memSyncedVersion = targetVersion;
+  ).bind(targetVersion).run();
 }
 

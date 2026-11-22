@@ -122,57 +122,16 @@ adminRoutes.get('/ai-engines', async (c) => {
       `SELECT id, slot_order, provider, label, model, base_url, weight, is_active, api_key_masked,
               temperature, max_tokens, daily_call_cap, calls_today, last_test_status, last_tested_at, updated_at
        FROM platform_ai_engines ORDER BY slot_order ASC, created_at ASC LIMIT 3`
-    ).all<{
-      id: string;
-      slot_order: number;
-      provider: string;
-      label: string;
-      model: string;
-      base_url: string | null;
-      weight: number;
-      is_active: number;
-      api_key_masked: string;
-      temperature: number;
-      max_tokens: number;
-      daily_call_cap: number;
-      calls_today: number;
-      last_test_status: string;
-      last_tested_at: string | null;
-      updated_at: string;
-    }>(),
+    ).all(),
     getPlatformAISummary(c.env),
   ]);
-  const engines = [...(rows.results ?? [])];
-  const secretKey = c.env.HILINKUP_API_KEY?.trim();
-  if (secretKey && !engines.some((e) => e.is_active === 1)) {
-    const masked = secretKey.length > 8 ? `${secretKey.slice(0, 4)}****${secretKey.slice(-4)}` : 'hlk_****';
-    const freeSlot = engines.some((e) => e.slot_order === 1) ? (engines.some((e) => e.slot_order === 2) ? 3 : 2) : 1;
-    engines.unshift({
-      id: 'env-hilinkup-default',
-      slot_order: freeSlot,
-      provider: 'openai_compatible',
-      label: 'Hilinkup DeepSeek v4.1 (Worker Secret)',
-      model: c.env.HILINKUP_MODEL?.trim() || 'baidu/deepseek-v4.1-flash-1017',
-      base_url: c.env.HILINKUP_BASE_URL?.trim() || 'https://api.hilinkup.com/v1',
-      weight: 100,
-      is_active: 1,
-      api_key_masked: masked,
-      temperature: 0.25,
-      max_tokens: 2048,
-      daily_call_cap: 50000,
-      calls_today: 0,
-      last_test_status: 'ACTIVE (SECRET)',
-      last_tested_at: null,
-      updated_at: new Date().toISOString(),
-    });
-  }
   return c.json({
-    engines,
+    engines: rows.results,
     consensusMode: summary.consensusMode,
     cacheTtlSec: summary.cacheTtlSec,
     activeCount: summary.activeCount,
     latestSignals: summary.latestSignals,
-    hilinkupSecretConfigured: Boolean(secretKey),
+    hilinkupSecretConfigured: Boolean(c.env.HILINKUP_API_KEY?.trim()),
     hilinkupModel: c.env.HILINKUP_MODEL?.trim() || 'baidu/deepseek-v4.1-flash-1017',
   });
 });
@@ -208,11 +167,7 @@ adminRoutes.post('/ai-engines', async (c) => {
   };
   let model = body.model.trim() || defaultModelMap[body.provider] || 'gpt-4o-mini';
   const cleanBase = body.baseUrl?.trim() || null;
-  if (
-    cleanBase &&
-    cleanBase.includes('hilinkup.com') &&
-    ['deep', 'deepseek', 'دیپی', 'deepseek-v4', 'deepseek-chat'].includes(model.toLowerCase())
-  ) {
+  if (cleanBase && cleanBase.includes('hilinkup.com') && ['deep', 'deepseek', 'دیپی', 'deepseek-v4'].includes(model.toLowerCase())) {
     model = c.env.HILINKUP_MODEL?.trim() || 'baidu/deepseek-v4.1-flash-1017';
   }
   const label = (body.label ?? '').trim() || `مدل ${slotOrder} (${body.provider.toUpperCase()})`;

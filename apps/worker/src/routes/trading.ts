@@ -31,11 +31,6 @@ import { getPlatformAISummary, resolveAIEnsemble, runAutonomousAITrader } from '
 import { buildProfitCardSvg, renderProfitCardPng } from '../cards/renderer.js';
 import { decryptVaultJson, hmacSha256Hex, randomId, sha256Hex } from '../crypto.js';
 import { enforceRateLimit } from '../security.js';
-import {
-  activateExclusiveTradingEngine,
-  getActiveEngineState,
-  type TradingEngineChoice,
-} from '../engine/exclusive-engine.js';
 import { requirePaidEntitlement, resolveUserEntitlement } from './subscriptions.js';
 import {
   executeSignalForUser,
@@ -166,7 +161,7 @@ tradingRoutes.get('/dashboard', async (c) => {
 
   const { adapter, provider, label } = await resolveUserExchangeAdapter(c.env, user.id, effectiveProvider);
 
-  const [balance, openTradesRaw, pendingOrders, closedTrades, recentSignals, stats, periodStats, walletRow, ledgerRows, aiRow, recentAiDecisions, entitlement, platformAI, activeEngine] = await Promise.all([
+  const [balance, openTradesRaw, pendingOrders, closedTrades, recentSignals, stats, periodStats, walletRow, ledgerRows, aiRow, recentAiDecisions, entitlement, platformAI] = await Promise.all([
     adapter.getBalance(cfg?.market_type ?? 'FUTURES').catch(() => ({ free: '0.00', used: '0.00', total: '0.00', currency: 'USDT' })),
     c.env.DB.prepare(`SELECT * FROM trades WHERE user_id = ? AND status = 'OPEN' ORDER BY opened_at DESC`).bind(user.id).all<{
       id: string;
@@ -230,7 +225,6 @@ tradingRoutes.get('/dashboard', async (c) => {
     ).bind(user.id).all().catch(() => ({ results: [] })),
     resolveUserEntitlement(c.env.DB, user),
     getPlatformAISummary(c.env),
-    getActiveEngineState(c.env.DB, user.id),
   ]);
 
   const totalEq = Math.max(1, Number(balance.total) || Number(cfg?.paper_balance ?? 10000));
@@ -361,7 +355,6 @@ tradingRoutes.get('/dashboard', async (c) => {
 
   return c.json({
     config: cfg,
-    activeEngine,
     kbosParams,
     riskProfile,
     activeExchange: { provider, label },
@@ -537,29 +530,9 @@ tradingRoutes.on(['PATCH', 'PUT'], '/config', async (c) => {
   sets.push(`updated_at = datetime('now')`);
   vals.push(user.id);
 
-  let engineSwitchResult: Awaited<ReturnType<typeof activateExclusiveTradingEngine>> | null = null;
-  if (typeof body.strategy_key === 'string' && body.strategy_key.trim()) {
-    const sk = body.strategy_key.trim();
-    const targetChoice: TradingEngineChoice =
-      sk === 'ai_autonomous_agent'
-        ? 'CENTRAL_AI'
-        : sk === 'my_custom_ai'
-          ? 'MY_AI'
-          : sk === 'copy_trade'
-            ? 'COPY_TRADE'
-            : 'STRATEGY';
-    engineSwitchResult = await activateExclusiveTradingEngine(c.env.DB, user.id, targetChoice, {
-      strategyKey: sk,
-      auditSource: 'config_update',
-    });
-  }
-
   await c.env.DB.prepare(`UPDATE bot_configs SET ${sets.join(', ')} WHERE user_id = ?`).bind(...vals).run();
-  const [updated, activeEngine] = await Promise.all([
-    c.env.DB.prepare('SELECT * FROM bot_configs WHERE user_id = ?').bind(user.id).first(),
-    getActiveEngineState(c.env.DB, user.id),
-  ]);
-  return c.json({ ok: true, config: updated, activeEngine, switchedFrom: engineSwitchResult });
+  const updated = await c.env.DB.prepare('SELECT * FROM bot_configs WHERE user_id = ?').bind(user.id).first();
+  return c.json({ config: updated });
 });
 
 tradingRoutes.post('/bot/start', async (c) => {
@@ -711,19 +684,6 @@ tradingRoutes.post('/bot/start', async (c) => {
   }
 
   vals.push(user.id);
-  const startChoice: TradingEngineChoice =
-    targetStrategy === 'ai_autonomous_agent'
-      ? 'CENTRAL_AI'
-      : targetStrategy === 'my_custom_ai'
-        ? 'MY_AI'
-        : targetStrategy === 'copy_trade'
-          ? 'COPY_TRADE'
-          : 'STRATEGY';
-  const exclRes = await activateExclusiveTradingEngine(c.env.DB, user.id, startChoice, {
-    strategyKey: targetStrategy,
-    customStrategyId: typeof body.customStrategyId === 'string' ? (body.customStrategyId || null) : undefined,
-    auditSource: 'bot_start',
-  });
   await c.env.DB.prepare(`UPDATE bot_configs SET ${sets.join(', ')} WHERE user_id = ?`).bind(...vals).run();
 
   await logAudit(
@@ -731,10 +691,9 @@ tradingRoutes.post('/bot/start', async (c) => {
     user.id,
     'SYSTEM',
     'INFO',
-    (targetStrategy === 'ai_autonomous_agent'
+    targetStrategy === 'ai_autonomous_agent'
       ? 'ربات با «هوش مصنوعی دلارینو» روشن شد و اسکن کل بازار آغاز گردید'
-      : 'ربات با «استراتژی منتخب دلارینو (موتور دُرنا V1)» روشن شد و اسکن کل بازار آغاز گردید') +
-      (exclRes.cancelledCopyCount > 0 ? ` (${exclRes.cancelledCopyCount} کپی‌ترید غیرفعال شد)` : '')
+      : 'ربات با «استراتژی منتخب دلارینو (موتور دُرنا V1)» روشن شد و اسکن کل بازار آغاز گردید'
   );
 
   const id = c.env.TRADING_BOT_DO.idFromName('global-coordinator');
@@ -2281,11 +2240,6 @@ tradingRoutes.post('/strategies/:id/activate', async (c) => {
   if (!row) return c.json({ error: 'Custom strategy not found' }, 404);
 
   const strategyKey = row.language === 'pine' ? 'custom_pine' : row.language === 'python' ? 'custom_python' : 'custom_visual';
-  await activateExclusiveTradingEngine(c.env.DB, user.id, 'STRATEGY', {
-    strategyKey,
-    customStrategyId: row.id,
-    auditSource: 'custom_strategy_activate',
-  });
   await c.env.DB.prepare(
     `UPDATE bot_configs SET strategy_key = ?, active_custom_strategy_id = ?, entry_timeframe = ?, updated_at = datetime('now') WHERE user_id = ?`
   ).bind(strategyKey, row.id, row.timeframe || '15m', user.id).run();

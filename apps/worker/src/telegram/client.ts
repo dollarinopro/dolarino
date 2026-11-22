@@ -220,7 +220,7 @@ export class TelegramBotClient {
     return this.call('setWebhook', {
       url,
       secret_token: secretToken,
-      allowed_updates: ['message', 'callback_query', 'channel_post', 'my_chat_member'],
+      allowed_updates: ['message', 'callback_query', 'channel_post'],
     });
   }
 

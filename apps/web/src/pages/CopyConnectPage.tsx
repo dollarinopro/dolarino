@@ -220,11 +220,7 @@ export function CopyConnectPage({
 
   const toggleFollowTrader = async (t: VerifiedCopyTrader) => {
     try {
-      const res = await apiFetch<{
-        ok: boolean;
-        following: boolean;
-        stoppedOtherEngines?: boolean;
-      }>('/api/copy-trade/follow', {
+      const res = await apiFetch<{ ok: boolean; following: boolean }>('/api/copy-trade/follow', {
         method: 'POST',
         body: JSON.stringify({
           traderId: t.id,
@@ -235,13 +231,13 @@ export function CopyConnectPage({
       flash(
         res.following
           ? isFa
-            ? `کپی‌ترید خودکار از ${t.display_name} فعال شد!${res.stoppedOtherEngines ? ' (ربات AI/استراتژی قبلی برای جلوگیری از تداخل متوقف شد)' : ''}`
-            : `Auto-copy enabled for ${t.display_name}${res.stoppedOtherEngines ? ' (previous AI/strategy engine stopped)' : ''}`
+            ? `کپی‌ترید خودکار از ${t.display_name} فعال شد!`
+            : `Auto-copy enabled for ${t.display_name}`
           : isFa
             ? `کپی‌ترید ${t.display_name} متوقف شد.`
             : `Unfollowed ${t.display_name}`
       );
-      await Promise.all([loadConnections(), onRefresh()]);
+      await loadConnections();
     } catch (err) {
       flash(err instanceof Error ? err.message : 'Subscription required', true);
     }
@@ -419,14 +415,6 @@ export function CopyConnectPage({
 
       {tab === 'copy' && (
         <div className="space-y-5">
-          <div className="rounded-2xl border border-amber-500/30 bg-amber-500/10 px-4 py-2.5 text-[11px] font-bold text-sub flex items-center gap-2">
-            <span>🔒</span>
-            <span>
-              {isFa
-                ? 'قانون تک‌موتوره دلارینو: با فعال‌کردن کپی‌ترید هر تریدر، موتورهای AI و استراتژی خودکار قبلی به‌صورت خودکار متوقف می‌شوند تا هم‌زمان دو موتور روی سرمایه شما معامله نکنند.'
-                : 'Single-Engine Rule: Following a copy trader automatically stops any active AI or autonomous strategy bot so multiple engines never conflict.'}
-            </span>
-          </div>
           {pendingConfirmTrades.length > 0 && (
             <div className="panel rounded-[26px] p-5 border border-amber-400/45 bg-amber-500/10 space-y-3">
               <div className="flex items-center gap-2 text-amber-400 font-black text-sm">

@@ -4,8 +4,6 @@ import type { InlineKeyboardButton, ReplyKeyboardButton } from './client.js';
 
 export const OFFICIAL_CHANNEL_HANDLE = '@Dollarino_official';
 export const OFFICIAL_BOT_HANDLE = '@Dollarino_bot';
-export const SIGNALS_CHANNEL_INVITE = 'https://t.me/+Wd-fTw0Q9XkzNGE0';
-export const RESULTS_CHANNEL_INVITE = 'https://t.me/+ZgVdmJ3eIPo5NDQ0';
 export const CREATOR_ATTRIBUTION_FA =
   '👨‍💻 طراح و سازنده پروژه دلارینو: **آوید کیا (Avid Kiya)**\n' +
   '• تلگرام: @avidkiya (https://t.me/avidkiya)\n' +
@@ -216,11 +214,9 @@ export function channelSignalInlineButtons(params: {
   botUsername: string;
   webAppUrl: string;
   forChannel: boolean;
-  resultsChannelInvite?: string;
 }): InlineKeyboardButton[][] {
   const cleanBot = params.botUsername.replace(/^@/, '') || 'Dollarino_bot';
   const baseWeb = params.webAppUrl.replace(/\/$/, '') || 'https://dollarino.pages.dev';
-  const resultsUrl = params.resultsChannelInvite || RESULTS_CHANNEL_INVITE;
 
   if (params.forChannel) {
     return [
@@ -238,11 +234,7 @@ export function channelSignalInlineButtons(params: {
       ],
       [
         {
-          text: '🏆 نتیجه سیگنال‌ها',
-          url: resultsUrl,
-        },
-        {
-          text: '📊 مشاهده در سایت',
+          text: '📊 مشاهده چارت در سایت',
           url: `${baseWeb}/?signal=${params.signalId}`,
         },
       ],
@@ -276,15 +268,13 @@ export function channelNewsInlineButtons(params: {
   webAppUrl: string;
   customButtonLabel?: string;
   customButtonUrl?: string;
-  signalsChannelInvite?: string;
-  resultsChannelInvite?: string;
 }): InlineKeyboardButton[][] {
   const cleanBot = params.botUsername.replace(/^@/, '') || 'Dollarino_bot';
   const baseWeb = params.webAppUrl.replace(/\/$/, '') || 'https://dollarino.pages.dev';
   const rows: InlineKeyboardButton[][] = [
     [
       {
-        text: '🤖 ربات @Dollarino_bot',
+        text: '🤖 ورود به ربات ترید @Dollarino_bot',
         url: `https://t.me/${cleanBot}`,
         style: 'primary',
       },
@@ -292,16 +282,6 @@ export function channelNewsInlineButtons(params: {
         text: '🚀 پنل هوشمند دلارینو',
         url: baseWeb,
         style: 'success',
-      },
-    ],
-    [
-      {
-        text: '📡 کانال سیگنال‌ها',
-        url: params.signalsChannelInvite || SIGNALS_CHANNEL_INVITE,
-      },
-      {
-        text: '🏆 نتیجه سیگنال‌ها',
-        url: params.resultsChannelInvite || RESULTS_CHANNEL_INVITE,
       },
     ],
   ];

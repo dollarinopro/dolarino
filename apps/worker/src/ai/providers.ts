@@ -213,7 +213,7 @@ export async function getPlatformAISummary(env: Env): Promise<PlatformAISummary>
   const cacheTtlSec = Math.max(30, Math.min(900, Number(ttlRaw) || 180));
   const engines = [...(enginesRes.results ?? [])];
   const hasExternalHilinkup = Boolean(env.HILINKUP_API_KEY?.trim());
-  if (!engines.some((e) => e.is_active === 1) && hasExternalHilinkup) {
+  if (engines.length === 0 && hasExternalHilinkup) {
     engines.push({
       id: 'env-hilinkup-default',
       slot_order: 1,
@@ -313,13 +313,13 @@ export async function resolvePlatformAIEngines(env: Env): Promise<{
   cacheTtlSec: number;
   capExceededCount: number;
 }> {
-  const consensusRaw = await getSetting(env.DB, 'ai_consensus_mode', 'SINGLE');
-  const ttlRaw = await getSetting(env.DB, 'ai_cache_ttl_sec', '600');
+  const consensusRaw = await getSetting(env.DB, 'ai_consensus_mode', 'ENSEMBLE_AUTO');
+  const ttlRaw = await getSetting(env.DB, 'ai_cache_ttl_sec', '180');
   const consensusMode = (
-    ['SINGLE', 'DUAL', 'ENSEMBLE_3', 'ENSEMBLE_AUTO'].includes(consensusRaw) ? consensusRaw : 'SINGLE'
+    ['SINGLE', 'DUAL', 'ENSEMBLE_3', 'ENSEMBLE_AUTO'].includes(consensusRaw) ? consensusRaw : 'ENSEMBLE_AUTO'
   ) as AIConsensusMode;
-  const cacheTtlSec = Math.max(60, Math.min(1800, Number(ttlRaw) || 600));
-  const limit = consensusMode === 'DUAL' ? 2 : consensusMode === 'ENSEMBLE_3' ? 3 : 3; // Fetch candidates for failover; execute only 1 unless DUAL/ENSEMBLE_3
+  const cacheTtlSec = Math.max(30, Math.min(900, Number(ttlRaw) || 180));
+  const limit = consensusMode === 'SINGLE' ? 1 : consensusMode === 'DUAL' ? 2 : 3;
 
   const rows = await env.DB.prepare(
     `SELECT id, slot_order, provider, label, model, base_url, weight, encrypted_api_key, temperature, max_tokens, daily_call_cap, calls_today, calls_reset_date
@@ -362,10 +362,7 @@ export async function resolvePlatformAIEngines(env: Env): Promise<{
     const cleanBase = (row.base_url || '').trim();
     const isHilinkup = cleanBase.includes('hilinkup.com');
     const modelLower = normalizedModel.toLowerCase();
-    if (
-      isHilinkup &&
-      (!normalizedModel || modelLower === 'deep' || modelLower === 'deepseek' || modelLower === 'دیپی' || modelLower === 'deepseek-v4' || modelLower === 'deepseek-chat')
-    ) {
+    if (isHilinkup && (!normalizedModel || modelLower === 'deep' || modelLower === 'deepseek' || modelLower === 'دیپی' || modelLower === 'deepseek-v4')) {
       normalizedModel = env.HILINKUP_MODEL?.trim() || 'baidu/deepseek-v4.1-flash-1017';
     } else if (row.provider === 'deepseek' && (!normalizedModel || modelLower === 'deep' || modelLower === 'دیپی')) {
       normalizedModel = isHilinkup ? (env.HILINKUP_MODEL?.trim() || 'baidu/deepseek-v4.1-flash-1017') : 'deepseek-chat';
@@ -538,7 +535,7 @@ export async function callBYOAI(
     const endpoint = rawBase.endsWith('/chat/completions') ? rawBase : `${rawBase}/chat/completions`;
     const primaryModel = ai.model || 'deepseek-chat';
     const fallbackModels = rawBase.includes('hilinkup.com')
-      ? Array.from(new Set([primaryModel, 'baidu/deepseek-v4.1-flash-1017', 'deepseek/deepseek-v4.1-flash-1017', 'doubao/deepseek-v4.1-flash-1017']))
+      ? Array.from(new Set([primaryModel, 'baidu/deepseek-v4.1-flash-1017', 'deepseek-chat']))
       : Array.from(new Set([primaryModel, 'deepseek-chat']));
 
     let lastErr = '';
@@ -559,10 +556,7 @@ export async function callBYOAI(
       if (!isReasoningModel) {
         bodyPayload.temperature = ai.temperature;
       }
-      if (
-        (opts?.fastJson && model === 'deepseek-flash') ||
-        (rawBase.includes('hilinkup.com') && (model.includes('flash-1017') || model.includes('deepseek-v4')))
-      ) {
+      if (opts?.fastJson && model === 'deepseek-flash') {
         bodyPayload.thinking = { type: 'disabled' };
       }
 
@@ -595,7 +589,7 @@ export async function callBYOAI(
   const endpoint = rawBase.endsWith('/chat/completions') ? rawBase : `${rawBase}/chat/completions`;
   const primaryModel = ai.model || 'gpt-4o-mini';
   const candidateModels = rawBase.includes('hilinkup.com')
-    ? Array.from(new Set([primaryModel, 'baidu/deepseek-v4.1-flash-1017', 'deepseek/deepseek-v4.1-flash-1017', 'doubao/deepseek-v4.1-flash-1017']))
+    ? Array.from(new Set([primaryModel, 'baidu/deepseek-v4.1-flash-1017', 'deepseek-chat']))
     : [primaryModel];
 
   let lastGatewayErr = '';
@@ -615,9 +609,6 @@ export async function callBYOAI(
       body: JSON.stringify({
         model,
         ...(isReasoningModel ? {} : { temperature: ai.temperature }),
-        ...(rawBase.includes('hilinkup.com') && (model.includes('flash-1017') || model.includes('deepseek-v4'))
-          ? { thinking: { type: 'disabled' } }
-          : {}),
         max_tokens: isReasoningModel ? Math.max(ai.maxTokens || 2400, 2400) : (ai.maxTokens || 1536),
         messages: [
           { role: 'system', content: systemPrompt },
@@ -1093,6 +1084,10 @@ export async function runAutonomousAITrader(
     mixerThreshold: params.mixerThreshold,
   });
 
+  if (ensemble.source === 'PLATFORM') {
+    await recordPlatformEngineUsage(env, ensemble.engines);
+  }
+
   const sysPrompt = `You are part of Dollarino Central AI Trading Committee — an institutional perpetual futures decision model.
 Analyze raw multi-timeframe price action, market microstructure, momentum, volatility (ATR), orderbook imbalance, and structural S/R to vote on LONG, SHORT, HOLD, or CLOSE.
 Respond ONLY with strict valid JSON:
@@ -1133,114 +1128,54 @@ Rules:
     norm: ReturnType<typeof normalizeSingleDecision>;
   }> = [];
 
-  const allowMultiEngine =
-    userId !== 'system_radar' &&
-    (ensemble.consensusMode === 'DUAL' || ensemble.consensusMode === 'ENSEMBLE_3') &&
-    ensemble.engines.length > 1;
-
-  if (!allowMultiEngine) {
-    // Single-engine execution with seamless failover (never burns tokens calling multiple models simultaneously)
-    for (let idx = 0; idx < ensemble.engines.length; idx++) {
-      const eng = ensemble.engines[idx]!;
-      const lightEng: AIRecord = { ...eng, maxTokens: Math.min(eng.maxTokens || 700, 700) };
+  const settled = await Promise.allSettled(
+    ensemble.engines.map(async (eng) => {
       const t0 = Date.now();
-      try {
-        if (ensemble.source === 'PLATFORM') {
-          await recordPlatformEngineUsage(env, [eng]);
-        }
-        const rawText = await callBYOAI(lightEng, sysPrompt, userPrompt, { fastJson: true });
-        const latencyMs = Date.now() - t0;
-        const match = rawText.match(/\{[\s\S]*\}/);
-        if (!match) throw new Error('Non-JSON response from model');
-        const parsed = JSON.parse(match[0]) as Partial<AITradeDecision>;
-        if (!parsed.action || parsed.confidence === undefined) {
-          throw new Error('Incomplete AI trade decision JSON');
-        }
-        const norm = normalizeSingleDecision(parsed, ctx.price, ctx.a14, params.maxLeverage);
-        validResults.push({ engine: eng, norm });
-        votes.push({
-          slotOrder: eng.slotOrder ?? idx + 1,
-          provider: eng.provider,
-          model: eng.model,
-          label: eng.label ?? eng.model,
-          weight: eng.weight ?? 100,
-          action: norm.action,
-          confidence: norm.confidence,
-          entry: norm.entry,
-          stopLoss: norm.stopLoss,
-          tp1: norm.tp1,
-          thesis: norm.thesis,
-          latencyMs,
-        });
-        break;
-      } catch (err) {
-        votes.push({
-          slotOrder: eng.slotOrder ?? idx + 1,
-          provider: eng.provider,
-          model: eng.model,
-          label: eng.label ?? eng.model,
-          weight: eng.weight ?? 100,
-          action: 'ERROR',
-          confidence: 0,
-          thesis: 'Model call failed',
-          error: err instanceof Error ? err.message : String(err),
-        });
+      const rawText = await callBYOAI(eng, sysPrompt, userPrompt, { fastJson: false });
+      const latencyMs = Date.now() - t0;
+      const match = rawText.match(/\{[\s\S]*\}/);
+      if (!match) throw new Error('Non-JSON response from model');
+      const parsed = JSON.parse(match[0]) as Partial<AITradeDecision>;
+      if (!parsed.action || parsed.confidence === undefined) {
+        throw new Error('Incomplete AI trade decision JSON');
       }
-    }
-  } else {
-    if (ensemble.source === 'PLATFORM') {
-      await recordPlatformEngineUsage(env, ensemble.engines);
-    }
-    const settled = await Promise.allSettled(
-      ensemble.engines.map(async (eng) => {
-        const lightEng: AIRecord = { ...eng, maxTokens: Math.min(eng.maxTokens || 700, 700) };
-        const t0 = Date.now();
-        const rawText = await callBYOAI(lightEng, sysPrompt, userPrompt, { fastJson: true });
-        const latencyMs = Date.now() - t0;
-        const match = rawText.match(/\{[\s\S]*\}/);
-        if (!match) throw new Error('Non-JSON response from model');
-        const parsed = JSON.parse(match[0]) as Partial<AITradeDecision>;
-        if (!parsed.action || parsed.confidence === undefined) {
-          throw new Error('Incomplete AI trade decision JSON');
-        }
-        const norm = normalizeSingleDecision(parsed, ctx.price, ctx.a14, params.maxLeverage);
-        return { eng, norm, latencyMs };
-      })
-    );
+      const norm = normalizeSingleDecision(parsed, ctx.price, ctx.a14, params.maxLeverage);
+      return { eng, norm, latencyMs };
+    })
+  );
 
-    for (let idx = 0; idx < settled.length; idx++) {
-      const res = settled[idx]!;
-      const eng = ensemble.engines[idx]!;
-      if (res.status === 'fulfilled') {
-        const { norm, latencyMs } = res.value;
-        validResults.push({ engine: eng, norm });
-        votes.push({
-          slotOrder: eng.slotOrder ?? idx + 1,
-          provider: eng.provider,
-          model: eng.model,
-          label: eng.label ?? eng.model,
-          weight: eng.weight ?? 100,
-          action: norm.action,
-          confidence: norm.confidence,
-          entry: norm.entry,
-          stopLoss: norm.stopLoss,
-          tp1: norm.tp1,
-          thesis: norm.thesis,
-          latencyMs,
-        });
-      } else {
-        votes.push({
-          slotOrder: eng.slotOrder ?? idx + 1,
-          provider: eng.provider,
-          model: eng.model,
-          label: eng.label ?? eng.model,
-          weight: eng.weight ?? 100,
-          action: 'ERROR',
-          confidence: 0,
-          thesis: 'Model call failed',
-          error: res.reason instanceof Error ? res.reason.message : String(res.reason),
-        });
-      }
+  for (let idx = 0; idx < settled.length; idx++) {
+    const res = settled[idx]!;
+    const eng = ensemble.engines[idx]!;
+    if (res.status === 'fulfilled') {
+      const { norm, latencyMs } = res.value;
+      validResults.push({ engine: eng, norm });
+      votes.push({
+        slotOrder: eng.slotOrder ?? idx + 1,
+        provider: eng.provider,
+        model: eng.model,
+        label: eng.label ?? eng.model,
+        weight: eng.weight ?? 100,
+        action: norm.action,
+        confidence: norm.confidence,
+        entry: norm.entry,
+        stopLoss: norm.stopLoss,
+        tp1: norm.tp1,
+        thesis: norm.thesis,
+        latencyMs,
+      });
+    } else {
+      votes.push({
+        slotOrder: eng.slotOrder ?? idx + 1,
+        provider: eng.provider,
+        model: eng.model,
+        label: eng.label ?? eng.model,
+        weight: eng.weight ?? 100,
+        action: 'ERROR',
+        confidence: 0,
+        thesis: 'Model call failed',
+        error: res.reason instanceof Error ? res.reason.message : String(res.reason),
+      });
     }
   }
 

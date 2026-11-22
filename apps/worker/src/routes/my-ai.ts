@@ -9,7 +9,6 @@ import { Hono } from 'hono';
 import { callBYOAI, resolveAIEnsemble } from '../ai/providers.js';
 import { requireAuth, type AppVariables } from '../auth.js';
 import { randomId } from '../crypto.js';
-import { activateExclusiveTradingEngine } from '../engine/exclusive-engine.js';
 import { logAudit } from '../engine/executor.js';
 import type { Env } from '../env.js';
 import { resolveUserExchangeAdapter } from '../exchanges/factory.js';
@@ -423,12 +422,11 @@ myAiRoutes.post('/activate', async (c) => {
   const agent = await ensureAgent(c.env.DB, user.id);
   const rules = parseRulesJson(agent.system_rules_json);
 
-  if (active) {
-    // Enforce strict single-engine rule: disables any Copy Trade subscriptions and switches bot_configs to my_custom_ai
-    await activateExclusiveTradingEngine(c.env.DB, user.id, 'MY_AI', {
-      auditSource: 'my_ai_activate',
-    });
+  await c.env.DB.prepare(
+    `UPDATE user_ai_agents SET is_active_for_trading = ?, updated_at = datetime('now') WHERE user_id = ?`
+  ).bind(active ? 1 : 0, user.id).run();
 
+  if (active) {
     const cfg = await c.env.DB.prepare(`SELECT trading_mode FROM bot_configs WHERE user_id = ?`)
       .bind(user.id).first<{ trading_mode: string }>();
     const nextState = body.startBot ? (cfg?.trading_mode === 'LIVE' ? 'RUNNING_LIVE' : 'RUNNING_PAPER') : undefined;
@@ -455,17 +453,6 @@ myAiRoutes.post('/activate', async (c) => {
       await stub.fetch(`https://do.internal/tick?userId=${encodeURIComponent(user.id)}`).catch(() => {});
     }
     await logAudit(c.env.DB, user.id, 'AI_AGENT', 'INFO', `Personal trained AI "${agent.name}" activated (${rules.timeframe}, ${rules.symbols.join(', ')})`);
-  } else {
-    await c.env.DB.prepare(
-      `UPDATE user_ai_agents SET is_active_for_trading = 0, updated_at = datetime('now') WHERE user_id = ?`
-    ).bind(user.id).run();
-    await c.env.DB.prepare(
-      `UPDATE bot_configs
-       SET bot_state = CASE WHEN strategy_key = 'my_custom_ai' THEN 'STOPPED' ELSE bot_state END,
-           strategy_key = CASE WHEN strategy_key = 'my_custom_ai' THEN 'dollarino_v01' ELSE strategy_key END,
-           updated_at = datetime('now')
-       WHERE user_id = ?`
-    ).bind(user.id).run().catch(() => {});
   }
 
   return c.json({ ok: true, isActiveForTrading: active });
